@@ -5,10 +5,9 @@
 
 using namespace std;
 
-// Buffer size for the delay: 32 * 1024 samples
+// Buffer size for the delay: 16 * 1024 samples
 constexpr size_t BUFFER_SIZE = 16 * 1024;
 
-// JACK callback function for audio processing
 int processCallback(jack_nframes_t nframes, void* arg) {
     struct PortsAndBuffer {
         jack_port_t* input_port;
@@ -30,7 +29,7 @@ int processCallback(jack_nframes_t nframes, void* arg) {
         cerr << "Ring buffer overflow! Skipping write.\n";
     }
 
-    // Read delayed samples from the ring buffer
+    // Read samples from the ring buffer if sufficiently full
     size_t read_size = (BUFFER_SIZE - nframes) * sizeof(float);
     if (jack_ringbuffer_read_space(data->ring_buffer) >= read_size) {
         jack_ringbuffer_read(data->ring_buffer, reinterpret_cast<char*>(output_buffer), write_size);
@@ -112,7 +111,7 @@ int main() {
         cerr << "Failed to connect input port\n";
     }
 
-    // Connect the single output port to both physical playback ports
+    // Connect the single output port to both physical playback ports (LR channels)
     cout << "Connecting " << jack_port_name(output_port) << " to " << output_ports[0] << "\n";
     if (jack_connect(client, jack_port_name(output_port), output_ports[0])) {
         cerr << "Failed to connect output port 1\n";

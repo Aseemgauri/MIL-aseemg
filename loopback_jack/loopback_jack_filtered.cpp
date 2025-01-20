@@ -4,14 +4,14 @@ using namespace std;
 
 float y01 = 0;
 float x01 = 0;
-// JACK callback function for audio processing
+
 int processCallback(jack_nframes_t nframes, void* arg) {
     jack_port_t** ports = reinterpret_cast<jack_port_t**>(arg);
     float* input_buffer = static_cast<float*>(jack_port_get_buffer(ports[0], nframes));
     float* output_buffer = static_cast<float*>(jack_port_get_buffer(ports[1], nframes));
-    // Copy input buffer to output buffer
     for (jack_nframes_t i = 0; i < nframes; ++i) {
         float x = input_buffer[i];
+        // Apply 1st order low-pass filter at 500 Hz at sample rate of 48000 using difference equation:
         float y = (0.93662412 * y01) + (0.03168794 * x) + (0.03168794 * x01);
         x01 = x;
         y01 = y;

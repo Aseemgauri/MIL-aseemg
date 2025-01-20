@@ -2,7 +2,6 @@
 #include <jack/jack.h>
 using namespace std;
 
-// JACK callback function for audio processing
 int processCallback(jack_nframes_t nframes, void* arg) {
     jack_port_t** ports = reinterpret_cast<jack_port_t**>(arg);
     float* input_buffer = static_cast<float*>(jack_port_get_buffer(ports[0], nframes));
