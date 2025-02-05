@@ -1,0 +1,109 @@
+{
+    "pl_module": "src.hl_modules.semhearing_hl_module.PLModule",
+    "pl_module_args": {
+        "metrics":["snr_i", "si_sdr_i"],
+        "model": "src.models.tfgridnet_realtime_clean_optim.net.Net",
+        "model_params": {
+            "spk_emb_dim": 5,
+            "stft_chunk_size":512,
+            "stft_pad_size": 256,
+            "num_ch": 2,
+            "D": 32,
+            "L": 4,
+            "I": 1,
+            "J": 1,
+            "B": 4,
+            "H": 64,
+            "E": 2,
+            "num_src": 2,
+            "use_attn": false,
+            "lookahead": true,
+            "chunk_causal": true,
+            "use_first_ln": true,
+            "merge_method": "early_cat",
+            "conv_lstm": true,
+	    "lstm_down": 4
+        },
+        "samples_per_speaker_number":5,
+        "optimizer":"torch.optim.Adam",
+        "optimizer_params":{
+            "lr":2e-3
+        },
+        "loss":"src.losses.SNRLosses.SNRLosses",                                                                                  
+        "loss_params":{
+            "name":"snr"
+        },
+        "scheduler":"torch.optim.lr_scheduler.ReduceLROnPlateau",
+        "scheduler_params":{
+            "mode":"min",
+            "patience":8,
+            "factor":0.5,
+            "min_lr":1e-6
+        },
+        "sr":44100,
+        "grad_clip": 1
+    },
+    "train_dataset": "src.datasets.semhearing_baked_dataset.SemHearingDataset",
+    "train_data_args": {
+        "dataset_dir": "/scr/BakedSemHearingDatasetWithMotion/train",
+        "sr": 44100,
+        "max_samples":20000,
+        "augmentations":[
+            {
+                "type":"src.datasets.augmentations.SampleShiftAugmentation.SampleShiftAugmentation",
+                "params":{
+                    "max_shift":4
+                },
+                "prob":0.2
+            },
+            {
+                "type":"src.datasets.augmentations.SpeedAugmentation.SpeedAugmentation",
+                "params":{
+                    "min_speed":0.9,
+                    "max_speed":1.1,
+                    "sample_rate":44100
+                },
+                "prob":0.2
+            },
+            {
+                "type":"src.datasets.augmentations.FrequencyMaskingAugmentation.FrequencyMaskingAugmentation",
+                "params":{
+                    "min_freq_masks":1,
+                    "max_freq_masks":512
+                },
+                "prob":0.2
+            },
+            {
+                "type":"src.datasets.augmentations.ChannelGainAugmentation.ChannelGainAugmentation",
+                "params":{
+                    "max_channel_gain_db":2
+                },
+                "prob":0.2
+            },
+            {
+                "type":"src.datasets.augmentations.PeakNormAugmentation.PeakNormAugmentation",
+                "params":{
+                    "min_scale":0.2,
+                    "max_scale":0.7
+                },
+                "prob":0.2
+            },
+            {
+                "type":"src.datasets.augmentations.WhitePinkBrownAugmentation.WhitePinkBrownAugmentation",
+                "params":{
+                },
+                "prob":0.5
+            }
+        ]
+    },
+    "val_dataset": "src.datasets.semhearing_baked_dataset.SemHearingDataset",
+    "val_data_args": {
+        "dataset_dir": "/scr/BakedSemHearingDatasetWithMotion/val",
+        "sr": 44100,
+        "max_samples":2000
+    },
+    "epochs": 200,
+    "batch_size": 8,
+    "eval_batch_size": 8,
+    "num_workers": 16
+}
