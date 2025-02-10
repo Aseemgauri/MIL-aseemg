@@ -9,6 +9,7 @@ class SFModel : public InferenceWrapper{
     public:
         SFModel(const std::string &model_path);
         
+        void set_embedding(int idx);
         void feed_audio_chunk(const float* data, int num_channels, int samples_per_channel);
         void infer();
         void reset_state();
@@ -21,10 +22,13 @@ class SFModel : public InferenceWrapper{
         int get_num_output_channels();
     
         float* current_frame;
+        float* current_embedding;
     private:
         std::vector<int64_t> frame_shape;
+        std::vector<int64_t> embedding_shape;
         std::vector<std::string> ctx_buf_names; // Context buffer names
         int total_num_elements;
+        int total_num_classes;
         float* processed;
 
         int num_input_channels;

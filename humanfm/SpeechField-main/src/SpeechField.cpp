@@ -13,7 +13,8 @@
 
 using namespace std::chrono;
 
-#define SR 24000
+#define SR 44100
+#define LABELS { "cat", "cock_a_doodle_doo", "cricket", "dog", "door_knock" }
 
 enum state {
     STATE_OFF,
@@ -126,7 +127,17 @@ void SpeechField::run(const std::string &model_path){
     std::vector<float> times;
 
     int j;
-    
+
+    const char* labels[] = LABELS;
+    int num_labels = sizeof(labels) / sizeof(labels[0]);  // Calculate the size of the array
+
+    const char* label = "door_knock";  // The label to search for
+
+    // Find the index using std::find and pointer arithmetic
+    int idx = (std::find(labels, labels + num_labels, label) != labels + num_labels)
+              ? std::distance(labels, std::find(labels, labels + num_labels, label))
+              : -1;
+
     // while(0){
     while(current_state != STATE_OFF){
         const float *released_mic_buf = audio_manager.wait_for_input_buffer();
@@ -151,7 +162,10 @@ void SpeechField::run(const std::string &model_path){
                 // And model gradually
                 
                 // Audio processing start
+                
+                nn.set_embedding(idx);
                 nn.feed_audio_chunk(released_mic_buf, num_input_channels, chunk_length);
+                
 
                 auto start = high_resolution_clock::now();
                 

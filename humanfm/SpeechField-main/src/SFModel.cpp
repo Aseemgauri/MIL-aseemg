@@ -7,14 +7,18 @@
 SFModel::SFModel(const std::string &model_path) : InferenceWrapper(model_path){
     frame_shape = this->get_input_shape("mixture");
     total_num_elements = calculate_product(frame_shape);
+    embedding_shape = this->get_input_shape("mixture"); //ADD THIS
+    total_num_classes = calculate_product(frame_shape); //ADD THIS
 
     current_frame = new float[total_num_elements];
+    current_embedding = new float [total_num_classes]; //ADD THIS
+    memset(current_embedding, 0, sizeof(float) * total_num_classes);
 
     // This is not a great way to implement it
     // Maybe change context buffers to be prepended with ctx_buf:: or something
     for(auto &k : input_names_map){
         std::string input_name = k.first;
-        if(input_name != "mixture"){
+        if(input_name != "mixture" && input_name != "embedding"){
             ctx_buf_names.emplace_back(input_name);
         }
     }
@@ -28,7 +32,15 @@ SFModel::SFModel(const std::string &model_path) : InferenceWrapper(model_path){
 
     this->reset_state();
 }
-        
+
+void SFModel::set_embedding(int idx) {
+    if(current_embedding[idx] == 0) {
+        memset(current_embedding, 0, sizeof(float) * total_num_classes);
+        current_embedding[idx] = 1;
+    }
+    set_input("embedding", current_embedding);
+}
+
 void SFModel::feed_audio_chunk(const float* data, int num_channels, int samples_per_channel){
     if(num_channels != frame_shape[1]){
         printf("[TSEModel] ERROR: Invalid number of channels - Expected %lld, Got %d", frame_shape[1], num_channels);
