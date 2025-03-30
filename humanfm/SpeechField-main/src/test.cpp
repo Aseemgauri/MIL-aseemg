@@ -51,7 +51,7 @@ bool Test::test_runtime(const std::string &tse_model_path){
 
 	printf("Ran inference\n");
 	std::cout << "Time taken: " << mean_time << " us" << std::endl;
-
+	printf("Test 1 over\n");
     return true;
 }
 
@@ -171,7 +171,7 @@ Check if inference is implemented correctly.
 */
 bool Test::test_extraction_model(const std::string &model_path,
 						 	 	 const std::string &test_data_path){
-
+	printf("Second test\n");
     // Initialize model
 	SFModel model = SFModel(model_path);
 
@@ -232,6 +232,7 @@ bool Test::test_extraction_model(const std::string &model_path,
 	}
 
 	return success;
+	return true;
 }
 
 bool Test::test_resampling(const std::string &input_audio_path,
@@ -322,66 +323,73 @@ bool Test::test_resampling(const std::string &input_audio_path,
 }
 
 void update_channel_order(AudioManager* audio_manager){
-	std::vector<int> input_channel_order = {0, 1, 2, 3, 4, 5};
-	audio_manager->set_input_channel_order(input_channel_order);
+    // For 2 inputs:
+    // input_00 -> physical port 0 (real mic)
+    // input_01 -> physical port 1 (dummy mic)
+    std::vector<int> input_channel_order = {0, 1};
+    audio_manager->set_input_channel_order(input_channel_order);
 }
 
 bool Test::test_audio_manager(){
 	int chunk_length = 192;
-	int num_input_channels = 6;
+	int num_input_channels = 2;
 
 	printf("Initializing Audio Manager\n");
-	AudioManager audio_manager = AudioManager(num_input_channels, 1);
+	AudioManager audio_manager = AudioManager(num_input_channels, 2);
 	printf("Initialized Audio Manager\n");
 
-	audio_manager.set_target_sampling_rate(24000);
-
-	std::vector<int> output_channel_order = {0, 0, 0, 0, 0, 0, 0, 0};
+	std::vector<int> output_channel_order = {0, 0};
 	audio_manager.set_output_channel_order(output_channel_order);
 	
-	int buf_size = 4 * 128;
-	float *buf = new float[2 * buf_size * 8];
-	printf("Configuring buffers...\n");
-	audio_manager.configure_input_buffers(buf, buf_size);
-	printf("Buffers configured\n");
-
+	// Configure input buffers first
+	float *buf = new float[2 * chunk_length * num_input_channels];
+	printf("Configuring input buffers...\n");
+	audio_manager.configure_input_buffers(buf, chunk_length);
+	printf("Input buffers configured\n");
+	
 	printf("Starting Audio Manager...\n");
 	audio_manager.start();
 	printf("Audio Manager Started!\n");
 
 	// Sleep for 5 seconds
+	printf("Sleeping for 5 seconds...\n");
 	usleep(1000 * 1000 * 5);
 
 	printf("Stopping Audio Manager...\n");
 	audio_manager.stop();
 	printf("Audio Manager Stopped!\n");
 	
+	// Give JACK time to clean up
+	printf("Waiting for JACK to clean up...\n");
+	usleep(500 * 1000); // 500ms delay
+	
 	update_channel_order(&audio_manager);
 	
-	delete buf;
-	
 	auto input_port_order = audio_manager.get_input_channel_order();
+	printf("Input port order: ");
 	for(auto &idx : input_port_order){
 		printf("%d ", idx);
 	}printf("\n");
 	
-	buf = new float[2 * chunk_length * num_input_channels];
-	audio_manager.configure_input_buffers(buf, chunk_length);
-	
 	printf("Pause for a second\n");
 	usleep(1000 * 1000 * 1);
 	
-	printf("Starting Audio Manager...\n");
+	printf("Starting Audio Manager again...\n");
 	audio_manager.start();
 	printf("Audio Manager Started!\n");
 	
 	// Sleep again
+	printf("Sleeping for 5 seconds...\n");
 	usleep(1000 * 1000 * 5);
 
 	printf("Stopping Audio Manager...\n");
 	audio_manager.stop();
 	printf("Audio Manager Stopped!\n");	
 
+	// Give JACK time to clean up before deleting buffers
+	printf("Waiting for JACK to clean up...\n");
 
-	return 1;
+	audio_manager.end();
+	delete[] buf;
+	return true;
 }

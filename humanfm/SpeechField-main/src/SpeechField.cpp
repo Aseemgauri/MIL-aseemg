@@ -69,14 +69,10 @@ void SpeechField::run(const std::string &model_path){
     int pad_length = nn.get_pad_length();
     int num_input_channels = nn.get_num_input_channels();
     int num_output_channels = nn.get_num_output_channels();
-    
-    
+
     AudioManager audio_manager = AudioManager(num_input_channels, num_output_channels);
     printf("[main] Audio Manager Initialized!\n");
     
-    // Receive and put 16kHz audio
-    audio_manager.set_target_sampling_rate(SR);
-
     // FOR BEST RESULTS, ENSURE THAT input_mixture_samples IS A MULTIPLE OF JACK SAMPLES PER FRAME
     
     // out buf

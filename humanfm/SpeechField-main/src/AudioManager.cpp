@@ -6,6 +6,7 @@
 #include <string.h>
 #include <thread>
 #include <chrono>
+#include <unistd.h>  // for usleep
 
 #include "AudioManager.h"
 
@@ -13,9 +14,22 @@
 // ALSA input is different from output (32-bit vs 24-bit)
 #define SCALE_REQUIRED false
 
+// Set to 1 to use a dummy mic port when only one physical mic is available
+// Set to 0 when you have a real 2-mic setup
+#define USE_DUMMY_MIC 0
+
+// Set to 1 to enable passthrough from input to output (for testing)
+#define ENABLE_PASSTHROUGH 0
+
 using namespace std::chrono;
 auto finish_time = high_resolution_clock::now();
 auto start_time = high_resolution_clock::now();
+
+// Declare the dummy mic port globally
+#if USE_DUMMY_MIC
+jack_port_t *dummy_mic_port = NULL;
+#endif
+const char *target_physical_port = NULL;
 
 void PCM32_to_PCM24(float *arr, int num_samples){
     #if SCALE_REQUIRED
@@ -30,24 +44,35 @@ void PCM32_to_PCM24(float *arr, int num_samples){
 float aux_arr[100000];
 
 int jack_callback_process(jack_nframes_t nframes, void *arg){
-    start_time = high_resolution_clock::now();
-    
     jack_default_audio_sample_t *in, *out;    
     AudioManager *audio_manager = (AudioManager *) (arg);
 
+    // If not running, zero out all output buffers and return
+    if (!audio_manager->is_running) {
+        for(int i = 0; i < audio_manager->get_num_output_channels(); i++){
+            out = (jack_default_audio_sample_t *) jack_port_get_buffer(audio_manager->output_ports[i], nframes);
+            memset(out, 0, nframes * sizeof(jack_default_audio_sample_t));
+        }
+        return 0;
+    }
+
+    start_time = high_resolution_clock::now();
+    
+    #if USE_DUMMY_MIC
+    // Fill the dummy mic port buffer with silence
+    if (dummy_mic_port != NULL) {
+        jack_default_audio_sample_t *dummy_buffer = (jack_default_audio_sample_t *)jack_port_get_buffer(dummy_mic_port, nframes);
+        memset(dummy_buffer, 0, sizeof(jack_default_audio_sample_t) * nframes);
+    }
+    #endif
+
     float *buf_start;
-    // float *current_write_buffer = &audio_manager->input_buffers[audio_manager->current_input_buffer_step];
     float *current_write_buffer = audio_manager->get_input_buffer_ptr(audio_manager->current_input_buffer_step);
     
     // Number of samples to write to the buffer
     uint32_t samples_to_write = nframes;
-
     // Samples remaining to fill the current buffer
     uint32_t samples_remaining;
-
-    // Samples written to buffer
-    uint32_t input_samples_written;
-    
     // Whether or not to release the current buffer
     bool release_buffer = false;
 
@@ -60,25 +85,18 @@ int jack_callback_process(jack_nframes_t nframes, void *arg){
         samples_to_write = nframes;
         buf_start = current_write_buffer + i * audio_manager->input_samples_per_channel + audio_manager->current_input_buffer_idx;
         
-        // Calculate the number of samples remaining to fill the input buffer at the original sampling rate
-        samples_remaining = audio_manager->input_resamplers[i]\
-            ->calculate_input_frames(audio_manager->input_samples_per_channel - audio_manager->current_input_buffer_idx);
+        // Calculate remaining samples in current buffer
+        samples_remaining = audio_manager->input_samples_per_channel - audio_manager->current_input_buffer_idx;
         
         // If the buffer has fewer samples required to fill it, only do a partial write and release the buffer
         // Then, start writing in the next buffer
         if(samples_remaining <= samples_to_write){
-            // Write however many samples are left to fill the buffer
-            
-            // memcpy(buf_start, in, samples_remaining * sizeof(jack_default_audio_sample_t));
-            input_samples_written = audio_manager->input_resamplers[i]->resample(buf_start, in, samples_remaining);
-            // printf("%d %d\n", samples_remaining, input_samples_written);
+            // Write remaining samples to current buffer
+            memcpy(buf_start, in, samples_remaining * sizeof(jack_default_audio_sample_t));
 
             // Probe input audio for debugging
             if(audio_manager->is_io_monitoring){
-                // If there is enough space to write audio, then we write
-                // Note that for unmasked channels, the ringbuffer capacity is zero and so this
-                // statement is always false.
-                int bytes_to_store = sizeof(float) * input_samples_written;
+                int bytes_to_store = sizeof(float) * samples_remaining;
                 if(rb_enough_space(&audio_manager->input_debug_v[i], bytes_to_store)){
                     rb_put(&audio_manager->input_debug_v[i], (uint8_t*) buf_start, bytes_to_store);
                 }
@@ -88,7 +106,6 @@ int jack_callback_process(jack_nframes_t nframes, void *arg){
             in += samples_remaining;
             
             // Start writing at the beginning of the other buffer
-            // buf_start = &audio_manager->input_buffers[!audio_manager->current_input_buffer_step] + i * audio_manager->input_buffer_size;
             buf_start = audio_manager->get_input_buffer_ptr(!audio_manager->current_input_buffer_step) + i * audio_manager->input_samples_per_channel;
             
             // We wrote some samples, now we need to write fewer samples
@@ -99,25 +116,16 @@ int jack_callback_process(jack_nframes_t nframes, void *arg){
         }
         
         if(samples_to_write > 0){
-            // memcpy(buf_start, in, samples_to_write * sizeof(jack_default_audio_sample_t));
-            input_samples_written = audio_manager->input_resamplers[i]->resample(buf_start, in, samples_to_write);
+            // Write remaining samples
+            memcpy(buf_start, in, samples_to_write * sizeof(jack_default_audio_sample_t));
 
             // Probe input audio for debugging
-            // if(i == 0){
-                // audio_manager->input_debug_v[i].insert(audio_manager->input_debug_v[i].end(), buf_start, buf_start + input_samples_written);
-            // }
             if(audio_manager->is_io_monitoring){
-                // If there is enough space to write audio, then we write
-                // Note that for unmasked channels, the ringbuffer capacity is zero and so this
-                // statement is always false.
-                int bytes_to_store = sizeof(float) * input_samples_written;
+                int bytes_to_store = sizeof(float) * samples_to_write;
                 if(rb_enough_space(&audio_manager->input_debug_v[i], bytes_to_store)){
                     rb_put(&audio_manager->input_debug_v[i], (uint8_t*) buf_start, bytes_to_store);
-                }else{
-		        }
+                }
             }
-        }else{
-            input_samples_written = 0;
         }
     }
 
@@ -127,35 +135,22 @@ int jack_callback_process(jack_nframes_t nframes, void *arg){
     }
 
     // Advance the current writing index by the amount of samples we've written
-    audio_manager->advance_idx(input_samples_written);
+    audio_manager->advance_idx(nframes);
     
-    // Number of frames required to read from output ringbuffer
-    uint32_t max_samples_to_read;
-    int samples_to_read, samples_written;
-
-    // FIXME: This may cause weird errors if one channel is written to but not the others
+    // Process output channels
     for(int i = 0; i < audio_manager->get_num_output_channels(); i++){
         ringbuffer_t *output_rb = &audio_manager->output_buffers[i];
         uint32_t samples_remaining = rb_size(output_rb) / sizeof(jack_default_audio_sample_t);
         
         // Read as many samples as needed/available from buffer
-        // This will depend on the output sampling rate vs. input sampling rate
-        max_samples_to_read = audio_manager->output_resamplers[i]->calculate_input_frames(nframes);
-        samples_to_read = std::min(samples_remaining, max_samples_to_read);
-
-	//printf("Samples remaining: %d\t To read: %d\n", samples_remaining, samples_to_read);
+        uint32_t samples_to_read = std::min(samples_remaining, (uint32_t)nframes);
         
         // Load data from ringbuffer into auxilliary array
         rb_get_fast(output_rb, (uint8_t*) aux_arr, sizeof(jack_default_audio_sample_t) * samples_to_read);
         rb_advance(output_rb, sizeof(jack_default_audio_sample_t) * samples_to_read);
 
         // Store output samples to output debug vector
-	    // audio_manager->output_debug_v[i].insert(audio_manager->output_debug_v[i].end(), aux_arr, aux_arr + samples_to_read);
-        
         if(audio_manager->is_io_monitoring){
-            // If there is enough space to write audio, then we write
-            // Note that for unmasked channels, the ringbuffer capacity is zero and so this
-            // statement is always false.
             int bytes_to_store = sizeof(float) * samples_to_read;
             if(rb_enough_space(&audio_manager->output_debug_v[i], bytes_to_store)){
                 rb_put(&audio_manager->output_debug_v[i], (uint8_t*) aux_arr, bytes_to_store);
@@ -166,25 +161,28 @@ int jack_callback_process(jack_nframes_t nframes, void *arg){
         out = (jack_default_audio_sample_t *) jack_port_get_buffer(
             audio_manager->output_ports[i], nframes);
 
-        // Resample and store result directly in output buffer
-        // Also get the number of output samples written from this
-        samples_written = audio_manager->output_resamplers[i]->resample(out, aux_arr, samples_to_read);
-
-        // FIXME: This should really be a conversion to float
-        // Scale elements in buffer
-        PCM32_to_PCM24(out, nframes);
-
-        // printf("%d %d\n", samples_to_read, samples_written);
+        // Copy data directly to output buffer
+        memcpy(out, aux_arr, samples_to_read * sizeof(jack_default_audio_sample_t));
         
-        // Fill the rest with zeros if needed.
-        if(samples_written < (int) nframes){
-            memset(out, 0, sizeof (jack_default_audio_sample_t) * (nframes - samples_written));
+        // Fill the rest with zeros if needed
+        if(samples_to_read < nframes){
+            memset(out + samples_to_read, 0, sizeof(jack_default_audio_sample_t) * (nframes - samples_to_read));
         }
     }
 
     finish_time = high_resolution_clock::now();
     auto duration = duration_cast<microseconds>(finish_time - start_time);
     printf("Duration %dus\n", duration);
+
+    #if ENABLE_PASSTHROUGH
+    // Passthrough from each input to its corresponding output (for testing)
+    for(int i = 0; i < std::min(audio_manager->get_num_input_channels(), audio_manager->get_num_output_channels()); i++) {
+        in = (jack_default_audio_sample_t *) jack_port_get_buffer(audio_manager->input_ports[i], nframes);
+        out = (jack_default_audio_sample_t *) jack_port_get_buffer(audio_manager->output_ports[i], nframes);
+        memcpy(out, in, nframes * sizeof(jack_default_audio_sample_t));
+    }
+    #endif
+
     return 0;
 }
 
@@ -214,76 +212,148 @@ void AudioManager::write_audio(const float *data, int num_samples, int channel_i
 
 AudioManager::AudioManager(){
     const char *client_name = JACK_CLIENT_NAME;
-	    const char *server_name = "SpeechField";
-
-
-    jack_options_t options = static_cast<jack_options_t>((int) JackNoStartServer \
-			      | (int) JackUseExactName \
-			     | (int) JackServerName);
-
-
     jack_status_t status;
 
-    jack_client = jack_client_open(client_name, options, &status, server_name);
+    // Initialize member variables
+    mic_ports = NULL;
+    spk_ports = NULL;
+    output_buffers = NULL;
+    input_buffers = NULL;
+    current_input_buffer_step = 0;
+    current_input_buffer_idx = 0;
+    input_samples_per_channel = 0;
+    input_samples_per_buffer = 0;
+    is_io_monitoring = false;
+    num_physical_input_channels = 0;
+    num_physical_output_channels = 0;
+    sampling_rate = 0;
+    block_size = 0;
 
+    // Open JACK client
+    jack_client = jack_client_open(client_name, JackNullOption, &status);
+    if (jack_client == NULL) {
+        fprintf(stderr, "[AudioManager] jack_client_open() failed, status = 0x%2.0x\n", status);
+        if (status & JackServerFailed) {
+            fprintf(stderr, "Unable to connect to JACK server\n");
+        }
+        return;
+    }
+
+    // Get JACK parameters
     block_size = jack_get_buffer_size(jack_client);
     sampling_rate = jack_get_sample_rate(jack_client);
-
     bool realtime = jack_is_realtime(jack_client);
     
     fprintf(stderr, "[AudioManager] JACK Sampling rate: %d\n", sampling_rate);
+    if (sampling_rate != 44100) {
+        fprintf(stderr, "Error: 44100 Hz is required.\n");
+        jack_client_close(jack_client);
+        return;
+    }
     fprintf(stderr, "[AudioManager] JACK Block size: %d\n", block_size);
     fprintf(stderr, "[AudioManager] Realtime? %d\n", realtime);
-
-    // Check if JACK Client open failed
-	if (jack_client == NULL) {
-		fprintf(stderr, "[AudioManager] jack_client_open() failed, status = 0x%2.0x\n", status);
-		if (status & JackServerFailed) {
-			fprintf(stderr, "Unable to connect to JACK server\n");
-		}
-        assert(0);
-	}
     
     // Check if JACK Client name was reassigned
     if (status & JackNameNotUnique) {
-		client_name = jack_get_client_name(jack_client);
-		fprintf (stderr, "[AudioManager] unique name `%s' assigned\n", client_name);
-	}
+        client_name = jack_get_client_name(jack_client);
+        fprintf (stderr, "[AudioManager] unique name `%s' assigned\n", client_name);
+    }
     
     // Check if JACK Server had been started
     if (status & JackServerStarted) {
-		fprintf(stderr, "[AudioManager] JACK server started\n");
-	}
+        fprintf(stderr, "[AudioManager] JACK server started\n");
+    }
 
+    printf("Querying physical ports...\n");
     // Discover physical ports
     query_physical_ports();
+    printf("Physical ports queried\n");
 
     // Register callbacks
-    jack_set_process_callback(jack_client, jack_callback_process, (void*) this);
-
-    is_io_monitoring = false;
+    if (jack_set_process_callback(jack_client, jack_callback_process, (void*) this) != 0) {
+        fprintf(stderr, "[AudioManager] Failed to set process callback\n");
+        jack_client_close(jack_client);
+        return;
+    }
 }
 
 void AudioManager::query_physical_ports(){
     // Get physical input ports (microphones)
+    const char **outputs = jack_get_ports(jack_client, NULL, NULL, JackPortIsPhysical|JackPortIsOutput);
+    if (outputs == NULL) {
+        fprintf(stderr, "[AudioManager] No physical output ports found\n");
+        return;
+    }
+
+    #if USE_DUMMY_MIC
+    // Register a dummy output port that will provide silence
+    // This makes the system think there are 2 microphones available
+    dummy_mic_port = jack_port_register(jack_client, "dummy_mic", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+    if (dummy_mic_port == NULL) {
+        fprintf(stderr, "Failed to register dummy microphone port\n");
+    } else {
+        fprintf(stderr, "Successfully registered dummy microphone port\n");
+    }
+    #endif
+
+    // Get all available microphone ports
+    if (mic_ports != NULL) {
+        free(mic_ports);  // Free existing mic_ports if any
+    }
     mic_ports = jack_get_ports(jack_client, NULL, NULL, JackPortIsPhysical|JackPortIsOutput);
+    if (mic_ports == NULL) {
+        fprintf(stderr, "[AudioManager] No microphone ports found\n");
+        free(outputs);
+        return;
+    }
+    
+    // Count how many real microphones we have
     this->num_physical_input_channels = 0;
-    while(mic_ports[this->num_physical_input_channels] != NULL){
+    while (mic_ports[this->num_physical_input_channels] != NULL) {
         this->num_physical_input_channels++;
     }
-
+    
+    #if USE_DUMMY_MIC
+    // Count our dummy port as an additional input channel
+    this->num_physical_input_channels++;
+    #endif
+    
     // Get physical output ports (speakers)
+    if (spk_ports != NULL) {
+        free(spk_ports);  // Free existing spk_ports if any
+    }
     spk_ports = jack_get_ports(jack_client, NULL, NULL, JackPortIsPhysical|JackPortIsInput);
+    if (spk_ports == NULL) {
+        fprintf(stderr, "[AudioManager] No physical input ports found\n");
+        free(outputs);
+        return;
+    }
+    
+    // Count physical output channels
     this->num_physical_output_channels = 0;
-    while(mic_ports[this->num_physical_output_channels] != NULL){
+    while (spk_ports[this->num_physical_output_channels] != NULL) {
         this->num_physical_output_channels++;
     }
-
+    
+    // Free the outputs list if it's different from mic_ports
+    if (outputs != NULL && outputs != mic_ports) {
+        free(outputs);
+    }
+    
+    // Print port information
+    if (spk_ports != NULL && this->num_physical_output_channels >= 2) {
+        printf("Speaker Ports: %s, %s\n", spk_ports[0], spk_ports[1]);
+    } else {
+        printf("Speaker Ports: (none or insufficient)\n");
+    }
+    
     printf("Num physical inputs: %d\n", this->num_physical_input_channels);
     printf("Num physical outputs: %d\n", this->num_physical_output_channels);
 }
 
 AudioManager::AudioManager(int num_input_channels, int num_output_channels): AudioManager(){
+    printf("Number of input channels: %d\n", num_input_channels);
+    printf("Number of output channels: %d\n", num_output_channels);
     this->setup_ports(num_input_channels, num_output_channels);
 
     // input_debug_v = std::vector<std::vector<float>>(std::max(this->num_physical_input_channels, num_input_channels));
@@ -350,7 +420,7 @@ void AudioManager::setup_ports(int num_input_ports, int num_output_ports){
     // Register virtual input ports
     char input_port_name[32];
     jack_port_t *input_port;
-    for(int i = 0; i < std::max(num_input_ports, this->num_physical_input_channels); i++){
+    for(int i = 0; i < num_input_ports; i++){  // Only create the requested number of ports
         sprintf(input_port_name, "input_%02d", i);
         input_port = jack_port_register (jack_client, input_port_name,
                                          JACK_DEFAULT_AUDIO_TYPE,
@@ -377,8 +447,11 @@ void AudioManager::setup_ports(int num_input_ports, int num_output_ports){
     // Initialize default port ordering: i-th virtual port -> (i % num_physical_ports)-th physical port
     reset_channel_order();
 
-    // Activate client before connecting
-    jack_activate(jack_client);
+    // Activate the client so it's ready to process audio
+    if (jack_activate(jack_client) != 0) {
+        fprintf(stderr, "Error: Cannot activate JACK client\n");
+        return;
+    }
 }
 
 void AudioManager::start_io_monitoring(){
@@ -390,64 +463,203 @@ void AudioManager::stop_io_monitoring(){
 }
 
 void AudioManager::start(){
-    // TODO: Check if properly configured
-    
     // Connect client (virtual) ports to physical ports
+    printf("Connecting input/output ports...\n");
+    
+    // Get available microphone ports (output ports in JACK terminology)
+    const char **available_mic_ports = jack_get_ports(jack_client, NULL, NULL, JackPortIsOutput);
+    
+    // In case mic_ports wasn't properly initialized
+    if (mic_ports == NULL) {
+        mic_ports = available_mic_ports;
+    } else if (available_mic_ports != NULL) {
+        // If we already have mic_ports, free the new ones
+        free(available_mic_ports);
+    }
+    
     for(int i = 0; i < (int) this->input_port_order.size(); i++){
         int physical_port_id = this->input_port_order[i];
-        if(jack_connect(jack_client, mic_ports[physical_port_id], jack_port_name (input_ports[i]))){
-            fprintf(stderr, "ERROR DURING MIC CONNECTION\n");
-			fprintf (stderr, "Cannot connect input ports %s and %s\n",
-                jack_port_name ((const jack_port_t*) mic_ports[physical_port_id]),
-                jack_port_name (input_ports[i]));
-		}
-	}
+        
+        // Make sure we don't go out of bounds
+        if (physical_port_id >= this->num_physical_input_channels) {
+            fprintf(stderr, "Warning: Physical port ID %d is out of bounds (max %d)\n", 
+                   physical_port_id, this->num_physical_input_channels - 1);
+            continue;
+        }
+        
+        #if USE_DUMMY_MIC
+        // If using the dummy mic port and this is the last port (dummy one)
+        if (physical_port_id == this->num_physical_input_channels - 1 && dummy_mic_port != NULL) {
+            // Connect our dummy mic port to this input
+            if (jack_connect(jack_client, jack_port_name(dummy_mic_port), jack_port_name(input_ports[i]))) {
+                fprintf(stderr, "ERROR DURING DUMMY MIC CONNECTION\n");
+                fprintf(stderr, "Cannot connect ports %s and %s\n",
+                        jack_port_name(dummy_mic_port),
+                        jack_port_name(input_ports[i]));
+            } else {
+                printf("Connected dummy mic to %s\n", jack_port_name(input_ports[i]));
+            }
+            continue; // Skip to next port
+        }
+        #endif
+        
+        // Connect to a real microphone port
+        if (mic_ports != NULL && mic_ports[physical_port_id] != NULL) {
+            if(jack_connect(jack_client, mic_ports[physical_port_id], jack_port_name(input_ports[i]))){
+                fprintf(stderr, "ERROR DURING MIC CONNECTION\n");
+                fprintf(stderr, "Cannot connect ports %s and %s\n",
+                       mic_ports[physical_port_id],
+                       jack_port_name(input_ports[i]));
+            } else {
+                printf("Connected %s to %s\n", mic_ports[physical_port_id], jack_port_name(input_ports[i]));
+            }
+        } else {
+            fprintf(stderr, "No microphone available at index %d\n", physical_port_id);
+        }
+    }
 
     for(int i = 0; i < (int) this->output_port_order.size(); i++){
         int virtual_port_id = this->output_port_order[i];
+        
+        if (virtual_port_id >= (int)this->output_ports.size() || i >= this->num_physical_output_channels) {
+            fprintf(stderr, "Invalid output port mapping: %d -> %d\n", virtual_port_id, i);
+            continue;
+        }
 
-		if(jack_connect(jack_client, jack_port_name (output_ports[virtual_port_id]), spk_ports[i])){
-            fprintf(stderr, "ERROR DURING SPK CONNECTION\n");
-			fprintf (stderr, "Cannot connect input ports %s and %s\n",
-                jack_port_name ((const jack_port_t*) spk_ports[i]),
-                jack_port_name (output_ports[virtual_port_id]));
-		}
-	}
+        if (spk_ports != NULL && spk_ports[i] != NULL) {
+            if(jack_connect(jack_client, jack_port_name(output_ports[virtual_port_id]), spk_ports[i])){
+                fprintf(stderr, "ERROR DURING SPK CONNECTION\n");
+                fprintf(stderr, "Cannot connect ports %s and %s\n",
+                    spk_ports[i],
+                    jack_port_name(output_ports[virtual_port_id]));
+            } else {
+                printf("Connected %s to %s\n", jack_port_name(output_ports[virtual_port_id]), spk_ports[i]);
+            }
+        } else {
+            fprintf(stderr, "No speaker available at index %d\n", i);
+        }
+    }
+
+    // Finally, start the callback process
+    is_running = true;
 }
 
 void AudioManager::stop(){
-    // Disconnect all ports
-    for(int i = 0; i < (int) this->input_port_order.size(); i++){
-        int physical_port_id = this->input_port_order[i];
-        
-        if(jack_disconnect(jack_client, mic_ports[physical_port_id], jack_port_name (input_ports[i]))){
-            fprintf (stderr, "Cannot disconnect input ports %s and %s\n",
-                jack_port_name ((const jack_port_t*) spk_ports[physical_port_id]),
-                jack_port_name (output_ports[i]));
+    // First stop the callback from processing
+    is_running = false;
+    
+    // Now disconnect all ports
+    printf("Disconnecting all ports...\n");
+    
+    // Disconnect input ports
+    for(int i = 0; i < input_ports.size(); i++){
+        if (input_ports[i] != NULL) {
+            const char* port_name = jack_port_name(input_ports[i]);
+            if (port_name != NULL) {
+                printf("Disconnecting input port %s\n", port_name);
+                // Get all connections for this port
+                const char** connections = jack_port_get_all_connections(jack_client, input_ports[i]);
+                if (connections != NULL) {
+                    for (int j = 0; connections[j] != NULL; j++) {
+                        jack_disconnect(jack_client, connections[j], port_name);
+                    }
+                    free(connections);
+                }
+            }
         }
     }
-    for(int i = 0; i < (int) this->output_port_order.size(); i++){
-        int virtual_port_id = this->output_port_order[i];
-        
-        if(jack_disconnect(jack_client, jack_port_name (output_ports[virtual_port_id]), spk_ports[i])){
-            fprintf (stderr, "Cannot disconnect input ports %s and %s\n",
-                jack_port_name ((const jack_port_t*) spk_ports[i]),
-                jack_port_name (output_ports[virtual_port_id]));
+    
+    // Disconnect output ports
+    for(int i = 0; i < output_ports.size(); i++){
+        if (output_ports[i] != NULL) {
+            const char* port_name = jack_port_name(output_ports[i]);
+            if (port_name != NULL) {
+                printf("Disconnecting output port %s\n", port_name);
+                // Get all connections for this port
+                const char** connections = jack_port_get_all_connections(jack_client, output_ports[i]);
+                if (connections != NULL) {
+                    for (int j = 0; connections[j] != NULL; j++) {
+                        jack_disconnect(jack_client, port_name, connections[j]);
+                    }
+                    free(connections);
+                }
+            }
         }
     }
-
-    // Clear buffers
-    for(int i = 0; i < this->get_num_output_channels(); i++){
+    
+    // Clear all buffers
+    for(int i = 0; i < output_ports.size(); i++){
         rb_reset(&output_buffers[i]);
     }
+}
 
+void AudioManager::end() {
+    static bool already_ended = false;
+    if (already_ended) {
+        printf("Audio Manager already ended, skipping cleanup\n");
+        return;
+    }
+    already_ended = true;
+    
+    printf("Ending Audio Manager...\n");
+    
+    // First stop all processing and disconnect ports
+    //stop();
+    
+    // Deactivate the client
+    if (jack_client != NULL && jack_deactivate(jack_client) != 0) {
+        fprintf(stderr, "Error: Cannot deactivate JACK client\n");
+    }
+    
+    #if USE_DUMMY_MIC
+    // Unregister our dummy mic port
+    if (dummy_mic_port != NULL) {
+        jack_port_unregister(jack_client, dummy_mic_port);
+        dummy_mic_port = NULL;
+    }
+    #endif
+    
+    // Close the client
+    if (jack_client != NULL) {
+        printf("Closing JACK client...\n");
+        jack_client_close(jack_client);
+        jack_client = NULL;
+    }
+    
+    // Free port arrays if they exist
+    if (mic_ports != NULL) {
+        free(mic_ports);
+        mic_ports = NULL;
+    }
+    if (spk_ports != NULL) {
+        free(spk_ports);
+        spk_ports = NULL;
+    }
+    
+    // Free output buffers
+    if (output_buffers != NULL) {
+        for(int i = 0; i < output_ports.size(); i++){
+            rb_destroy(&output_buffers[i]);
+        }
+        delete[] output_buffers;
+        output_buffers = NULL;
+    }
+    
+    // Clear all vectors
+    input_ports.clear();
+    output_ports.clear();
+    input_port_order.clear();
+    output_port_order.clear();
+    input_debug_v.clear();
+    output_debug_v.clear();
+    
+    // Reset the static flag if we need to reuse this instance
+    already_ended = false;
 }
 
 AudioManager::~AudioManager(){
-    jack_deactivate(jack_client);
-    jack_client_close(jack_client);
-    free(mic_ports);
-    free(spk_ports);
+    // Call end() to clean up all resources
+    end();
 }
 
 int AudioManager::get_num_input_channels(){
@@ -478,32 +690,6 @@ void AudioManager::set_input_channel_order(const std::vector<int> order){
 
 std::vector<int> AudioManager::get_input_channel_order(void){
     return this->input_port_order;
-}
-
-void AudioManager::set_target_sampling_rate(int target_sampling_rate){
-    for (auto r : input_resamplers){
-        delete r;
-    }
-
-    for (auto r : output_resamplers){
-        delete r;
-    }
-    
-    input_resamplers.clear();
-    output_resamplers.clear();
-
-    this->target_sampling_rate = target_sampling_rate;
-
-    for(int i = 0; i < (int) this->input_ports.size(); i++){
-        ResamplerWrapper* r = new ResamplerWrapper(this->sampling_rate, target_sampling_rate, 1);
-        input_resamplers.push_back(r);
-    }
-
-    for(int i = 0; i < (int) this->output_ports.size(); i++){
-        ResamplerWrapper* r = new ResamplerWrapper(target_sampling_rate, this->sampling_rate, 1);
-        output_resamplers.push_back(r);
-    }
-
 }
 
 float* AudioManager::get_input_buffer_ptr(int double_buffer_idx){
@@ -564,8 +750,8 @@ std::vector<int> AudioManager::calibrate_channels(int num_channels){
     std::vector<bool> finished_calibrating(num_inputs);
 
     // Start reading audio samples from JACK server
-    this->start();
     
+    this->start();
     int channel_index, num_frames=0;
     while(new_order.size() < num_channels){
         bool channel_detected = false;
@@ -585,8 +771,6 @@ std::vector<int> AudioManager::calibrate_channels(int num_channels){
             for(channel_index = 0; channel_index < num_inputs; channel_index++){
                 // If we've already seen a spike in this channel, skip it
                 if(finished_calibrating[channel_index]) continue;
-
-		// printf("channel %d\n", channel_index);
 
                 // Monitor spikes along this channel, if we found one, than this channel is next in order
                 if(detect_spike(released_mic_buf + channel_index * buf_size, buf_size)){
@@ -608,7 +792,9 @@ std::vector<int> AudioManager::calibrate_channels(int num_channels){
     this->stop();
 
     // Update order
+    
     set_input_channel_order(new_order);
+    
 
     // Cleanup
     delete buf;

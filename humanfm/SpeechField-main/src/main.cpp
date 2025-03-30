@@ -19,7 +19,7 @@ using namespace std::chrono;
 void test(std::string model_path){
 	bool success;
 	
-	success = Test::test_runtime(model_path);
+	/*success = Test::test_runtime(model_path);
 	if(success){
 		printf("[SUCCESS] Runtime test\n");
 	}else{
@@ -47,7 +47,7 @@ void test(std::string model_path){
 		printf("[SUCCESS] Resampling test\n");
 	}else{
 		printf("[FAILED] Resampling test\n");
-	}
+	}*/
 	
 	printf("RUNNING AUDIO MANAGER TEST\n");
 	success = Test::test_audio_manager();

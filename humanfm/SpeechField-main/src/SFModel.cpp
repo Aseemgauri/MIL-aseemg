@@ -7,11 +7,11 @@
 SFModel::SFModel(const std::string &model_path) : InferenceWrapper(model_path){
     frame_shape = this->get_input_shape("mixture");
     total_num_elements = calculate_product(frame_shape);
-    embedding_shape = this->get_input_shape("mixture"); //ADD THIS
-    total_num_classes = calculate_product(frame_shape); //ADD THIS
+    embedding_shape = this->get_input_shape("embedding");
+    total_num_classes = calculate_product(embedding_shape);
 
     current_frame = new float[total_num_elements];
-    current_embedding = new float [total_num_classes]; //ADD THIS
+    current_embedding = new float [total_num_classes];
     memset(current_embedding, 0, sizeof(float) * total_num_classes);
 
     // This is not a great way to implement it

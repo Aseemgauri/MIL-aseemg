@@ -7,7 +7,6 @@
 #include <mutex>
 
 #include "ringbuffer.h"
-#include "Resampler.h"
 
 #define JACK_CLIENT_NAME "SpeechField"
 #define AUDIO_OUTPUT_BUFFER_SIZE 1000000
@@ -21,6 +20,7 @@ class AudioManager{
 
         void start();
         void stop();
+        void end();  // New method for complete cleanup
 
         /*
         Specifies the point in memory where double-buffered data from the microphones
@@ -32,7 +32,13 @@ class AudioManager{
         int get_num_output_channels();
         
         int get_block_size();
-        void set_target_sampling_rate(int target_sampling_rate);
+
+        // Deprecated: Sampling rate is now fixed at 44100Hz
+        void set_target_sampling_rate(int target_sampling_rate) {
+            if (target_sampling_rate != 44100) {
+                fprintf(stderr, "Warning: set_target_sampling_rate() is deprecated. Only 44100Hz is supported.\n");
+            }
+        }
 
         void setup_ports(int num_input_ports, int num_output_ports);
 
@@ -62,6 +68,8 @@ class AudioManager{
         std::vector<ringbuffer_t> input_debug_v;
         std::vector<ringbuffer_t> output_debug_v;
         ringbuffer_t* output_buffers;
+        bool is_running;  // Flag to control audio processing
+        bool is_io_monitoring;  // Flag to control audio monitoring
     private:
         bool input_data_available();
         void release_buffer();
@@ -76,14 +84,9 @@ class AudioManager{
         jack_client_t *jack_client;
         
         int sampling_rate;
-        int target_sampling_rate;
-        
         int block_size;
         int num_physical_input_channels;
         int num_physical_output_channels;
-        
-        // When true, audio manager stores input and output audio in pre-allocated ringbuffers
-        bool is_io_monitoring;
         
         // For inputs:
         // input_port_order[i] is the physical channel that the i-th input channel is sourced from
@@ -112,12 +115,6 @@ class AudioManager{
         int input_samples_per_buffer;
         int input_samples_per_channel;
         float *input_buffers;
-
-
-        std::vector<ResamplerWrapper*> input_resamplers;
-        std::vector<ResamplerWrapper*> output_resamplers;
-
 };
-
 
 #endif
