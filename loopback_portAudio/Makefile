@@ -9,8 +9,8 @@ OUTPUT_NORMAL = loopback
 OUTPUT_LATENT = loopback_latent
 
 # Source files
-SRCS_NORMAL = loopback.cpp ringbuffer.cpp
-SRCS_LATENT = loopback_latent.cpp ringbuffer.cpp
+SRCS_NORMAL = loopback.cpp
+SRCS_LATENT = loopback_latent.cpp
 
 # Default target: Compile both executables
 all: $(OUTPUT_NORMAL) $(OUTPUT_LATENT)
