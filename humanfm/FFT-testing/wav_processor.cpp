@@ -1,18 +1,13 @@
 #include <iostream>
 #include <fstream>
-#include <vector>
 #include <string>
 #include <cstdint>
 #include <complex>
-#include <algorithm>  // For std::max and std::min
+#include <algorithm>
 #include <fftw3.h>
 #include "ringbuffer.cpp"
+#include "audio_config.h"
 
-// Define the constants
-#define CHUNK_SIZE 1024  // Example chunk size, adjust as needed
-#define LB_SIZE 1024     // Lookback size
-#define LF_SIZE 1024     // Look forward size
-#define WINDOW_SIZE (LB_SIZE + CHUNK_SIZE + LF_SIZE)
 
 // WAV file header structure
 struct WAVHeader {
@@ -40,99 +35,98 @@ struct ChunkHeader {
 
 class WAVProcessor {
 public:
-    WAVProcessor() : ringBuffer(CHUNK_SIZE * sizeof(float)) {  // Adjust buffer size for float
-        initializeBuffers();
+    // Constructor: Initializes the ring buffer and FFTW plans
+    WAVProcessor() : ringBuffer(CHUNK_SIZE * sizeof(float)) {
+        // Initialize windows if not already initialized
+        static bool windowsInitialized = false;
+        if (!windowsInitialized) {
+            initializeWindows();
+            windowsInitialized = true;
+        }
         initializeFFTW();
     }
 
+    // Destructor: Cleans up FFTW resources
     ~WAVProcessor() {
         cleanupFFTW();
     }
 
-    bool readWAV(const std::string& inputFile) {
-        std::ifstream file(inputFile, std::ios::binary);
-        if (!file.is_open()) {
+    // Main processing function: Reads input WAV file, processes audio data, and writes to output file
+    bool processWAV(const std::string& inputFile, const std::string& outputFile) {
+        std::ifstream inFile(inputFile, std::ios::binary);
+        if (!inFile.is_open()) {
             std::cerr << "Error: Could not open input file: " << inputFile << std::endl;
             return false;
         }
 
+        std::ofstream outFile(outputFile, std::ios::binary);
+        if (!outFile.is_open()) {
+            std::cerr << "Error: Could not open output file: " << outputFile << std::endl;
+            inFile.close();
+            return false;
+        }
+
         // Read and validate main header
-        if (!readAndValidateHeader(file)) {
+        if (!readAndValidateHeader(inFile)) {
+            inFile.close();
+            outFile.close();
             return false;
         }
 
         // Find and read data chunk
         uint32_t dataSize;
-        if (!findDataChunk(file, dataSize)) {
+        if (!findDataChunk(inFile, dataSize)) {
+            inFile.close();
+            outFile.close();
             return false;
         }
 
-        // Process audio data
-        if (!processAudioData(file, dataSize)) {
+        // Write header to output file
+        writeHeader(outFile);
+
+        // Write data chunk header
+        ChunkHeader dataChunk = {};
+        std::memcpy(dataChunk.id, "data", 4);
+        dataChunk.size = dataSize;  // We'll update this later
+        outFile.write(reinterpret_cast<char*>(&dataChunk), sizeof(ChunkHeader));
+
+        // Process audio data and write immediately
+        if (!processAndWriteAudioData(inFile, outFile, dataSize)) {
+            inFile.close();
+            outFile.close();
             return false;
         }
 
-        file.close();
-        return true;
-    }
+        // Update data chunk size in output file
+        size_t dataWritten = static_cast<size_t>(outFile.tellp()) - (sizeof(WAVHeader) + sizeof(ChunkHeader));
+        outFile.seekp(sizeof(WAVHeader) + 4);  // Skip to size field of data chunk
+        uint32_t finalSize = static_cast<uint32_t>(dataWritten);
+        outFile.write(reinterpret_cast<char*>(&finalSize), sizeof(uint32_t));
 
-    bool writeWAV(const std::string& outputFile) {
-        std::ofstream file(outputFile, std::ios::binary);
-        if (!file.is_open()) {
-            std::cerr << "Error: Could not open output file: " << outputFile << std::endl;
-            return false;
-        }
-
-        // Debug output for data size
-        std::cout << "Writing " << processedData.size() << " bytes to output file" << std::endl;
-        std::cout << "Number of samples: " << processedData.size() / sizeof(float) << std::endl;
-
-        // Write header and data
-        writeHeader(file);
-        writeDataChunk(file);
-        writeAudioData(file);
-
-        file.close();
+        inFile.close();
+        outFile.close();
         return true;
     }
 
     // Getter methods for FFT results
-    const std::vector<double>& getFFTReal() const { return fftReal; }
-    const std::vector<double>& getFFTImag() const { return fftImag; }
+    const double* getFFTReal() const { return g_fftReal; }
+    const double* getFFTImag() const { return g_fftImag; }
 
 private:
-    void initializeBuffers() {
-        // Initialize ring buffer with zeros
-        std::vector<char> zeroChunk(CHUNK_SIZE * sizeof(float), 0);
-        for (int i = 0; i < 3; i++) {
-            ringBuffer.write(zeroChunk.data());
-        }
-
-        // Initialize synthesis buffers
-        previousBuffer.resize(WINDOW_SIZE - LB_SIZE, 0.0);  // CHUNK_SIZE + LF_SIZE
-        currentBuffer.resize(WINDOW_SIZE - LB_SIZE, 0.0);   // CHUNK_SIZE + LF_SIZE
-        synthesisBuffer.resize(WINDOW_SIZE, 0.0);
-    }
-
+    // Initializes FFTW plans and buffers for forward and inverse FFT
     void initializeFFTW() {
         // Initialize FFT
         fftIn = fftw_alloc_real(WINDOW_SIZE);
-        fftOut = fftw_alloc_complex(WINDOW_SIZE/2 + 1);
+        fftOut = fftw_alloc_complex(FFT_SIZE);
         fftPlan = fftw_plan_dft_r2c_1d(WINDOW_SIZE, fftIn, fftOut, FFTW_ESTIMATE);
         
         // Initialize IFFT
-        ifftIn = fftw_alloc_complex(WINDOW_SIZE/2 + 1);
+        ifftIn = fftw_alloc_complex(FFT_SIZE);
         ifftOut = fftw_alloc_real(WINDOW_SIZE);
         ifftPlan = fftw_plan_dft_c2r_1d(WINDOW_SIZE, ifftIn, ifftOut, FFTW_ESTIMATE);
-        
-        // Initialize FFT result arrays
-        fftReal.resize(WINDOW_SIZE/2 + 1);
-        fftImag.resize(WINDOW_SIZE/2 + 1);
-        
-        // Initialize IFFT result array
-        ifftResult.resize(WINDOW_SIZE);
     }
 
+    // Cleans up FFTW resources and frees allocated memory
     void cleanupFFTW() {
         fftw_destroy_plan(fftPlan);
         fftw_destroy_plan(ifftPlan);
@@ -142,6 +136,7 @@ private:
         fftw_free(ifftOut);
     }
 
+    // Reads and validates the WAV file header, checking format and sample rate
     bool readAndValidateHeader(std::ifstream& file) {
         file.read(reinterpret_cast<char*>(&header), sizeof(WAVHeader));
         
@@ -188,6 +183,7 @@ private:
         return true;
     }
 
+    // Locates the data chunk in the WAV file and returns its size
     bool findDataChunk(std::ifstream& file, uint32_t& dataSize) {
         ChunkHeader chunkHeader;
         bool foundData = false;
@@ -215,33 +211,37 @@ private:
         return true;
     }
 
-    bool processAudioData(std::ifstream& file, uint32_t dataSize) {
-        std::vector<char> chunk(CHUNK_SIZE * sizeof(float));
+    // Processes audio data in chunks and writes to output file
+    bool processAndWriteAudioData(std::ifstream& inFile, std::ofstream& outFile, uint32_t dataSize) {
         size_t totalBytesRead = 0;
         
         while (totalBytesRead < dataSize) {
-            if (!readAndProcessChunk(file, chunk, dataSize, totalBytesRead)) {
+            if (!readAndProcessChunk(inFile, dataSize, totalBytesRead)) {
                 return false;
             }
+            
+            // Write the processed chunk immediately
+            outFile.write(g_chunkBuffer, CHUNK_SIZE * sizeof(float));
         }
+        
         return true;
     }
 
-    bool readAndProcessChunk(std::ifstream& file, std::vector<char>& chunk, 
-                           uint32_t dataSize, size_t& totalBytesRead) {
+    // Reads a chunk of audio data and processes it
+    bool readAndProcessChunk(std::ifstream& file, uint32_t dataSize, size_t& totalBytesRead) {
         // Read a chunk from the file
         size_t bytesToRead = (CHUNK_SIZE * sizeof(float) < (dataSize - totalBytesRead)) ? 
                             CHUNK_SIZE * sizeof(float) : 
                             (dataSize - totalBytesRead);
-        file.read(chunk.data(), bytesToRead);
+        file.read(g_chunkBuffer, bytesToRead);
         
         // Pad the last chunk with zeros if necessary
         if (bytesToRead < CHUNK_SIZE * sizeof(float)) {
-            std::fill(chunk.begin() + bytesToRead, chunk.end(), 0);
+            std::fill(g_chunkBuffer + bytesToRead, g_chunkBuffer + CHUNK_SIZE * sizeof(float), 0);
         }
         
         // Process the chunk
-        if (!processChunk(chunk)) {
+        if (!processChunk()) {
             return false;
         }
         
@@ -249,32 +249,27 @@ private:
         return true;
     }
 
-    bool processChunk(const std::vector<char>& chunk) {
+    // Processes a single chunk of audio data through FFT and IFFT
+    bool processChunk() {
         // Add the chunk to the ring buffer
-        ringBuffer.write(chunk.data());
+        ringBuffer.write(g_chunkBuffer);
         
         // Get the window of samples for FFT analysis
-        std::vector<char> window = getWindowSamples();
+        getWindowSamples();
         
-        // Convert char buffer to float samples
-        std::vector<float> floatWindow(WINDOW_SIZE);
+        // Apply analysis window and copy to FFT input
         for (size_t i = 0; i < WINDOW_SIZE; i++) {
-            // Interpret the bytes as float values
-            floatWindow[i] = *reinterpret_cast<const float*>(&window[i * sizeof(float)]);
-        }
-        
-        // Convert float samples to double for FFT
-        for (size_t i = 0; i < WINDOW_SIZE; i++) {
-            fftIn[i] = static_cast<double>(floatWindow[i]);
+            float sample = *reinterpret_cast<const float*>(&g_windowBuffer[i * sizeof(float)]);
+            fftIn[i] = static_cast<double>(sample) * g_analysisWindow[i];
         }
         
         // Perform FFT
         fftw_execute(fftPlan);
         
         // Store real and imaginary components
-        for (size_t i = 0; i < WINDOW_SIZE/2 + 1; i++) {
-            fftReal[i] = fftOut[i][0];  // Real part
-            fftImag[i] = fftOut[i][1];  // Imaginary part
+        for (size_t i = 0; i < FFT_SIZE; i++) {
+            g_fftReal[i] = fftOut[i][0];  // Real part
+            g_fftImag[i] = fftOut[i][1];  // Imaginary part
         }
 
         // Perform IFFT
@@ -290,11 +285,12 @@ private:
         return true;
     }
 
+    // Performs inverse FFT on the processed frequency domain data
     bool performIFFT() {
         // Prepare for IFFT
-        for (size_t i = 0; i < WINDOW_SIZE/2 + 1; i++) {
-            ifftIn[i][0] = fftReal[i];  // Real part
-            ifftIn[i][1] = fftImag[i];  // Imaginary part
+        for (size_t i = 0; i < FFT_SIZE; i++) {
+            ifftIn[i][0] = g_fftReal[i];  // Real part
+            ifftIn[i][1] = g_fftImag[i];  // Imaginary part
         }
         
         // Compute IFFT
@@ -302,92 +298,71 @@ private:
         
         // Store IFFT result (normalize by window size)
         for (size_t i = 0; i < WINDOW_SIZE; i++) {
-            ifftResult[i] = ifftOut[i] / WINDOW_SIZE;
+            g_ifftResult[i] = ifftOut[i] / WINDOW_SIZE;
         }
 
         return true;
     }
 
+    // Performs overlap-add synthesis on the IFFT result
     bool performOverlapAdd() {
         // Store the current IFFT result in the current buffer
-        for (size_t i = 0; i < WINDOW_SIZE - LB_SIZE; i++) {
-            currentBuffer[i] = ifftResult[i];
+        std::copy(g_ifftResult, g_ifftResult + BUFFER_SIZE, g_currentBuffer);
+
+        // Copy the last ISTFT_OUTPUT_SIZE frames to the current context buffer
+        double* ctxPtr = getIstftContextBuffer(g_lookbackBufIdx);
+        std::copy(g_ifftResult + (WINDOW_SIZE - ISTFT_OUTPUT_SIZE),
+                 g_ifftResult + WINDOW_SIZE,
+                 ctxPtr);
+
+        // Do overlap-add for the current chunk
+        float* outputChunk = reinterpret_cast<float*>(g_chunkBuffer);
+        for (int j = 0; j < CHUNK_SIZE; j++) {
+            // Accumulate result from all relevant lookback buffers
+            double result = 0.0;
+            for (int8_t historyBufIdx = g_lookbackBufIdx;
+                 historyBufIdx > g_lookbackBufIdx - ISTFT_LOOKBACK_BUFFERS;
+                 historyBufIdx--) {
+                
+                // Get the lookback buffer
+                double* historyPtr = getIstftContextBuffer(historyBufIdx);
+                
+                // Calculate the index in the history buffer
+                int ctxIdx = j + (g_lookbackBufIdx - historyBufIdx) * CHUNK_SIZE;
+                if (ctxIdx < ISTFT_OUTPUT_SIZE) {
+                    // Apply synthesis window and accumulate
+                    result += historyPtr[ctxIdx] * g_synthesisWindow[ctxIdx];
+                }
+            }
+            
+            // Store the result
+            outputChunk[j] = static_cast<float>(result);
         }
 
-        // Initialize synthesis buffer with zeros
-        std::fill(synthesisBuffer.begin(), synthesisBuffer.end(), 0.0);
-
-        // Copy non-overlapping section from previous buffer
-        for (size_t i = 0; i < CHUNK_SIZE; i++) {
-            synthesisBuffer[i] = previousBuffer[i];
-        }
-
-        // Blend overlapping section (LF_SIZE samples) with 0.5/0.5 weighting
-        for (size_t i = 0; i < LF_SIZE; i++) {
-            synthesisBuffer[CHUNK_SIZE + i] = 0.5 * previousBuffer[CHUNK_SIZE + i] + 0.5 * currentBuffer[i];
-        }
-
-        // Copy remaining non-overlapping section from current buffer
-        for (size_t i = LF_SIZE; i < WINDOW_SIZE - LB_SIZE; i++) {
-            synthesisBuffer[CHUNK_SIZE + i] = currentBuffer[i];
-        }
-
-        // Take the middle CHUNK_SIZE samples from synthesis buffer
-        // These should be from index LB_SIZE to LB_SIZE + CHUNK_SIZE
-        std::vector<float> outputChunk(CHUNK_SIZE);
-        for (size_t i = 0; i < CHUNK_SIZE; i++) {
-            outputChunk[i] = static_cast<float>(synthesisBuffer[LB_SIZE + i]);
-        }
-
-        // Store the processed chunk as float values
-        size_t oldSize = processedData.size();
-        processedData.insert(processedData.end(), 
-                           reinterpret_cast<char*>(outputChunk.data()),
-                           reinterpret_cast<char*>(outputChunk.data() + CHUNK_SIZE));
-        
-        // Verify data was written correctly
-        if (processedData.size() != oldSize + CHUNK_SIZE * sizeof(float)) {
-            std::cerr << "Error: Data size mismatch in processedData" << std::endl;
-            return false;
-        }
-
-        // Update previous buffer for next iteration
-        previousBuffer = currentBuffer;
+        // Advance the lookback buffer index
+        g_lookbackBufIdx = (g_lookbackBufIdx + 1) % ISTFT_LOOKBACK_BUFFERS;
 
         return true;
     }
 
-    std::vector<char> getWindowSamples() {
-        std::vector<char> window(WINDOW_SIZE * sizeof(float));  // Adjust size for float
+    // Retrieves window samples from the ring buffer for processing
+    void getWindowSamples() {
         const std::vector<char>& buffer = ringBuffer.getBuffer();
         size_t writePos = ringBuffer.getWritePosition();
         
         for (size_t i = 0; i < WINDOW_SIZE * sizeof(float); i++) {
             size_t pos = (writePos - WINDOW_SIZE * sizeof(float) + i + buffer.size()) % buffer.size();
-            window[i] = buffer[pos];
+            g_windowBuffer[i] = buffer[pos];
         }
-        
-        return window;
     }
 
+    // Writes the WAV header to the output file
     void writeHeader(std::ofstream& file) {
         file.write(reinterpret_cast<char*>(&header), sizeof(WAVHeader));
     }
 
-    void writeDataChunk(std::ofstream& file) {
-        ChunkHeader dataChunk = {};
-        std::memcpy(dataChunk.id, "data", 4);
-        dataChunk.size = processedData.size();
-        file.write(reinterpret_cast<char*>(&dataChunk), sizeof(ChunkHeader));
-    }
-
-    void writeAudioData(std::ofstream& file) {
-        file.write(processedData.data(), processedData.size());
-    }
-
     WAVHeader header;
     RingBuffer ringBuffer;
-    std::vector<char> processedData;
     
     // FFTW variables
     double* fftIn;
@@ -398,20 +373,9 @@ private:
     fftw_complex* ifftIn;
     double* ifftOut;
     fftw_plan ifftPlan;
-    
-    // FFT results
-    std::vector<double> fftReal;  // Real components
-    std::vector<double> fftImag;  // Imaginary components
-    
-    // IFFT result
-    std::vector<double> ifftResult;  // Time domain signal
-    
-    // Synthesis buffers
-    std::vector<double> previousBuffer;  // Previous window (CHUNK_SIZE + LF_SIZE)
-    std::vector<double> currentBuffer;   // Current window (CHUNK_SIZE + LF_SIZE)
-    std::vector<double> synthesisBuffer; // Combined window (WINDOW_SIZE)
 };
 
+// Main entry point: Processes command line arguments and runs the WAV processor
 int main(int argc, char* argv[]) {
     if (argc != 3) {
         std::cout << "Usage: " << argv[0] << " <input_wav_file> <output_wav_file>" << std::endl;
@@ -420,11 +384,7 @@ int main(int argc, char* argv[]) {
 
     WAVProcessor processor;
     
-    if (!processor.readWAV(argv[1])) {
-        return 1;
-    }
-
-    if (!processor.writeWAV(argv[2])) {
+    if (!processor.processWAV(argv[1], argv[2])) {
         return 1;
     }
 
