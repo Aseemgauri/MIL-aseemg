@@ -1,6 +1,6 @@
 CXX = g++
-CXXFLAGS = -O2 -Wall -Wextra
-LDFLAGS = -lfftw3
+CXXFLAGS = -O2 -Wall -Wextra -std=c++17
+LDFLAGS = -lfftw3 -lonnxruntime
 
 SRCS = wav_processor.cpp static_buffers.cpp
 OBJS = $(SRCS:.cpp=.o)

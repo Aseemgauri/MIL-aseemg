@@ -120,30 +120,28 @@ void rb_reset(ringbuffer_t *rb){
   rb_init(rb, rb->buf, rb->size);
 }
 
-class RingBuffer {
-public:
-    RingBuffer(size_t chunkSize) 
-        : CHUNK_SIZE(chunkSize),
-          BUFFER_SIZE(3 * chunkSize),
-          buffer(BUFFER_SIZE, 0),
+RingBuffer::RingBuffer(size_t chunkSizeParam) 
+    : chunkSize(chunkSizeParam),
+      bufferSize(3 * chunkSizeParam),
+      buffer(bufferSize, 0),
           writePos(0),
           readPos(0) {
     }
 
     // Copy constructor
-    RingBuffer(const RingBuffer& other)
-        : CHUNK_SIZE(other.CHUNK_SIZE),
-          BUFFER_SIZE(other.BUFFER_SIZE),
+RingBuffer::RingBuffer(const RingBuffer& other)
+    : chunkSize(other.chunkSize),
+      bufferSize(other.bufferSize),
           buffer(other.buffer),
           writePos(other.writePos),
           readPos(other.readPos) {
     }
 
     // Assignment operator
-    RingBuffer& operator=(const RingBuffer& other) {
+RingBuffer& RingBuffer::operator=(const RingBuffer& other) {
         if (this != &other) {
-            const_cast<size_t&>(CHUNK_SIZE) = other.CHUNK_SIZE;
-            const_cast<size_t&>(BUFFER_SIZE) = other.BUFFER_SIZE;
+        const_cast<size_t&>(chunkSize) = other.chunkSize;
+        const_cast<size_t&>(bufferSize) = other.bufferSize;
             buffer = other.buffer;
             writePos = other.writePos;
             readPos = other.readPos;
@@ -152,42 +150,34 @@ public:
     }
 
     // Add a chunk of data to the buffer
-    void write(const char* data) {
+void RingBuffer::write(const char* data) {
         // Write the new chunk
-        std::memcpy(&buffer[writePos], data, CHUNK_SIZE);
+    std::memcpy(&buffer[writePos], data, chunkSize);
         
         // Update write position
-        writePos = (writePos + CHUNK_SIZE) % BUFFER_SIZE;
+    writePos = (writePos + chunkSize) % bufferSize;
     }
 
     // Read a chunk of data from the buffer
-    void read(char* output) {
+void RingBuffer::read(char* output) {
         // Read the chunk
-        std::memcpy(output, &buffer[readPos], CHUNK_SIZE);
+    std::memcpy(output, &buffer[readPos], chunkSize);
         
         // Update read position
-        readPos = (readPos + CHUNK_SIZE) % BUFFER_SIZE;
+    readPos = (readPos + chunkSize) % bufferSize;
     }
 
     // Get the current state of the buffer
-    const std::vector<char>& getBuffer() const {
+const std::vector<char>& RingBuffer::getBuffer() const {
         return buffer;
     }
 
     // Get the current write position
-    size_t getWritePosition() const {
+size_t RingBuffer::getWritePosition() const {
         return writePos;
     }
 
     // Get the current read position
-    size_t getReadPosition() const {
+size_t RingBuffer::getReadPosition() const {
         return readPos;
     }
-
-private:
-    const size_t CHUNK_SIZE;
-    const size_t BUFFER_SIZE;
-    std::vector<char> buffer;
-    size_t writePos;
-    size_t readPos;
-};

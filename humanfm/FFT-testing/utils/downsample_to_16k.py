@@ -1,34 +1,41 @@
 import sys
 import os
-import librosa
 import soundfile as sf
+from scipy.signal import resample_poly
 
-def downsample_to_16k(input_file):
-    if not os.path.isfile(input_file):
-        print(f"Error: File '{input_file}' not found.")
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: python resample_to_16k.py <input.wav>")
         sys.exit(1)
+
+    input_filename = sys.argv[1]
+    
+    if not os.path.isfile(input_filename):
+        print(f"Error: File '{input_filename}' does not exist.")
+        sys.exit(1)
+
+    # Target sample rate
+    target_sr = 16000
+
+    # Load input file
+    data, original_sr = sf.read(input_filename)
+
+    # Compute up/down ratio for resampling
+    gcd = lambda a, b: a if b == 0 else gcd(b, a % b)
+    factor = gcd(original_sr, target_sr)
+    up = target_sr // factor
+    down = original_sr // factor
+
+    # Resample
+    resampled_data = resample_poly(data, up, down)
 
     # Output filename
-    base, _ = os.path.splitext(input_file)
-    output_file = f"{base}_5s_16k_float32.wav"
+    base, ext = os.path.splitext(input_filename)
+    output_filename = f"{base}_16k.wav"
 
-    # Load only the first 5 seconds
-    max_duration = 5.0  # seconds
-    audio, sr = librosa.load(input_file, sr=None, mono=True, duration=max_duration)
+    # Save resampled audio
+    sf.write(output_filename, resampled_data, target_sr)
+    print(f"Resampled '{input_filename}' from {original_sr} Hz to {target_sr} Hz → '{output_filename}'")
 
-    # Resample to 16kHz
-    target_sr = 16000
-    audio_16k = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
-
-    # Save using WAV format and FLOAT subtype to ensure 'data' chunk
-    sf.write(output_file, audio_16k, samplerate=target_sr, format='WAV', subtype='FLOAT')
-
-    print(f"Saved: {output_file} (5s, 16kHz, 32-bit float, 'data' chunk)")
-
-if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        print("Usage: python downsample_to_16k.py <input.wav>")
-        sys.exit(1)
-
-    input_path = sys.argv[1]
-    downsample_to_16k(input_path)
+if __name__ == "__main__":
+    main()
