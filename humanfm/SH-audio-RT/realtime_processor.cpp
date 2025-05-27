@@ -2,17 +2,16 @@
 #include <cstring>
 #include <algorithm>
 #include <thread>
-#include <mutex>
-#include <condition_variable>
 #include <atomic>
-#include <queue>
 #include <chrono>
 #include <fftw3.h>
 #include <onnxruntime/onnxruntime_cxx_api.h>
 #include "audio_manager.h"
 #include "audio_config.h"
 #include "static_buffers.h"
-#include "ringbuffer.h"
+#include "unified_ringbuffer.h"
+#include "audio_data_structures.h"
+#include "onnx_tensor_manager.h"
 
 // Passthrough mode: when enabled, bypasses ONNX inference and directly passes input to output
 // Set to 1 to enable passthrough, 0 to use normal ONNX processing
@@ -21,95 +20,18 @@
 // Inference mode: when ENABLE_PASSTHROUGH is 0 and ENABLE_INFERENCE is 0, 
 // we do all FFT/IFFT processing but bypass ONNX inference (clone FFT output 5 times)
 // Set to 1 to enable ONNX inference, 0 to bypass inference but keep FFT processing
-#define ENABLE_INFERENCE 0
+#define ENABLE_INFERENCE 1
 
-// Thread-safe queue for audio data
-template<typename T>
-class ThreadSafeQueue {
-private:
-    std::queue<T> queue_;
-    mutable std::mutex mutex_;
-    std::condition_variable condition_;
-
-public:
-    void push(const T& item) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        queue_.push(item);
-        condition_.notify_one();
-    }
-
-    bool tryPop(T& item) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (queue_.empty()) {
-            return false;
-        }
-        item = queue_.front();
-        queue_.pop();
-        return true;
-    }
-
-    void waitAndPop(T& item) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        condition_.wait(lock, [this] { return !queue_.empty(); });
-        item = queue_.front();
-        queue_.pop();
-    }
-
-    bool empty() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return queue_.empty();
-    }
-
-    size_t size() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return queue_.size();
-    }
-};
-
-// Audio frame structure
-struct AudioFrame {
-    float data[CHUNK_SIZE];
-    
-    AudioFrame() {
-        std::fill(data, data + CHUNK_SIZE, 0.0f);
-    }
-    
-    AudioFrame(const float* inputData) {
-        std::copy(inputData, inputData + CHUNK_SIZE, data);
-    }
-};
-
-// FFT data structure
-struct FFTData {
-    double real[FFT_SIZE];
-    double imag[FFT_SIZE];
-    
-    FFTData() {
-        std::fill(real, real + FFT_SIZE, 0.0);
-        std::fill(imag, imag + FFT_SIZE, 0.0);
-    }
-};
-
-// ONNX output structure
-struct ONNXOutput {
-    float classData[5][258];  // 5 classes, each with 258 elements
-    
-    ONNXOutput() {
-        for (int i = 0; i < 5; i++) {
-            std::fill(classData[i], classData[i] + 258, 0.0f);
-        }
-    }
-};
+// Ring buffer capacities (must be powers of 2)
+constexpr size_t AUDIO_FRAME_BUFFER_SIZE = 64;   // 64 audio frames
+constexpr size_t FFT_DATA_BUFFER_SIZE = 32;      // 32 FFT frames  
+constexpr size_t ONNX_OUTPUT_BUFFER_SIZE = 32;   // 32 ONNX outputs
 
 class RealtimeProcessor {
 public:
     RealtimeProcessor() : 
-        audioInputQueue_(),
-        fftQueue_(),
-        onnxOutputQueue_(),
-        audioOutputQueue_(),
         stopProcessing_(false),
-        ringBuffer_(CHUNK_SIZE * sizeof(float)) {
+        ringBuffer_() {
         
         // Initialize windows if not already initialized
         static bool windowsInitialized = false;
@@ -122,11 +44,11 @@ public:
         // Initialize class-specific overlap-add state
         for (int classIdx = 0; classIdx < 5; classIdx++) {
             classLookbackBufIdx_[classIdx] = 0;
-            std::fill(classCurrentBuffer_[classIdx], classCurrentBuffer_[classIdx] + BUFFER_SIZE, 0.0);
-            std::fill(classIfftResult_[classIdx], classIfftResult_[classIdx] + WINDOW_SIZE, 0.0);
+            std::memset(classCurrentBuffer_[classIdx], 0, BUFFER_SIZE * sizeof(double));
+            std::memset(classIfftResult_[classIdx], 0, WINDOW_SIZE * sizeof(double));
             for (int bufIdx = 0; bufIdx < ISTFT_LOOKBACK_BUFFERS; bufIdx++) {
-                std::fill(classIstftContextBuffers_[classIdx][bufIdx], 
-                         classIstftContextBuffers_[classIdx][bufIdx] + ISTFT_OUTPUT_SIZE, 0.0);
+                std::memset(classIstftContextBuffers_[classIdx][bufIdx], 0, 
+                           ISTFT_OUTPUT_SIZE * sizeof(double));
             }
         }
         
@@ -154,19 +76,10 @@ public:
             // Load the model
             onnxSession_ = std::make_unique<Ort::Session>(*onnxEnv_, modelPath.c_str(), *sessionOptions_);
             
-            // Create memory info
-            memoryInfo_ = std::make_unique<Ort::MemoryInfo>(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault));
-            
-                         // Initialize input buffers
-             std::fill(embeddingInput_, embeddingInput_ + 5, 1.0f);  // 1x5 filled with 1s
-             std::fill(convBufInput_, convBufInput_ + (4 * 2 * 129), 0.0f);  // 1x4x2x129
-             std::fill(deconvBufInput_, deconvBufInput_ + (32 * 2 * 129), 0.0f);  // 1x32x2x129
-             
-             // Initialize block buffers
-             for (int i = 0; i < 6; i++) {
-                 std::fill(blockBufsInput_[i][0], blockBufsInput_[i][0] + (129 * 32), 0.0f);  // h0: 1x129x32
-                 std::fill(blockBufsInput_[i][1], blockBufsInput_[i][1] + (129 * 32), 0.0f);  // c0: 1x129x32
-             }
+            // Initialize tensor manager
+            if (!tensorManager_.initialize()) {
+                throw std::runtime_error("Failed to initialize tensor manager");
+            }
             
             std::cout << "[RealtimeProcessor] ONNX model loaded successfully from: " << modelPath << std::endl;
             return true;
@@ -217,23 +130,26 @@ public:
     void pushInputAudio(const float* stereoData, size_t numSamples) {
         // Convert stereo to mono quickly in audio callback
         AudioFrame frame;
-        for (size_t i = 0; i < std::min(numSamples / 2, (size_t)CHUNK_SIZE); i++) {
+        frame.clear();  // Explicit clear instead of constructor
+        
+        const size_t samplesToProcess = std::min(numSamples / 2, (size_t)CHUNK_SIZE);
+        for (size_t i = 0; i < samplesToProcess; i++) {
             frame.data[i] = (stereoData[i * 2] + stereoData[i * 2 + 1]) * 0.5f;
         }
         
 #if ENABLE_PASSTHROUGH
-        // In passthrough mode, directly push to output queue
-        audioOutputQueue_.push(frame);
+        // In passthrough mode, directly push to output buffer
+        audioOutputBuffer_.tryPush(frame);
 #else
-        // Push to input queue for processing
-        audioInputQueue_.push(frame);
+        // Push to input buffer for processing
+        audioInputBuffer_.tryPush(frame);
 #endif
     }
     
     // Called by audio manager in real-time audio callback
     bool popOutputAudio(float* outputData, size_t numSamples) {
         AudioFrame frame;
-        if (audioOutputQueue_.tryPop(frame)) {
+        if (audioOutputBuffer_.tryPop(frame)) {
             std::copy(frame.data, frame.data + std::min(numSamples, (size_t)CHUNK_SIZE), outputData);
             return true;
         }
@@ -244,11 +160,11 @@ public:
     }
 
 private:
-    // Thread-safe queues
-    ThreadSafeQueue<AudioFrame> audioInputQueue_;
-    ThreadSafeQueue<FFTData> fftQueue_;
-    ThreadSafeQueue<ONNXOutput> onnxOutputQueue_;
-    ThreadSafeQueue<AudioFrame> audioOutputQueue_;
+    // Lock-free ring buffers for inter-thread communication
+    LockFreeRingBuffer<AudioFrame, AUDIO_FRAME_BUFFER_SIZE> audioInputBuffer_;
+    LockFreeRingBuffer<FFTData, FFT_DATA_BUFFER_SIZE> fftBuffer_;
+    LockFreeRingBuffer<ONNXOutput, ONNX_OUTPUT_BUFFER_SIZE> onnxOutputBuffer_;
+    LockFreeRingBuffer<AudioFrame, AUDIO_FRAME_BUFFER_SIZE> audioOutputBuffer_;
     
     // Threading
     std::atomic<bool> stopProcessing_;
@@ -257,7 +173,7 @@ private:
     std::thread synthesisThread_;
     
     // Ring buffer for sliding window
-    RingBuffer ringBuffer_;
+    SlidingWindowBuffer ringBuffer_;
     
     // FFTW variables
     double* fftIn_;
@@ -271,16 +187,9 @@ private:
     std::unique_ptr<Ort::Env> onnxEnv_;
     std::unique_ptr<Ort::Session> onnxSession_;
     std::unique_ptr<Ort::SessionOptions> sessionOptions_;
-    std::unique_ptr<Ort::MemoryInfo> memoryInfo_;
     
-         // ONNX input/output buffers (pre-allocated, no dynamic allocation)
-     float embeddingInput_[5];
-     float convBufInput_[4 * 2 * 129];  // 1x4x2x129
-     float blockBufsInput_[6][2][129 * 32];  // 6 blocks, 2 buffers each (h0, c0): 1x129x32
-     float deconvBufInput_[32 * 2 * 129];  // 1x32x2x129
-     
-     // Pre-allocated buffers for ONNX inference (no allocation in real-time)
-     float onnxInputBuffer_[4 * 129];  // 4 channels * 129 frequency bins
+    // Pre-allocated ONNX tensor manager
+    ONNXTensorManager tensorManager_;
      
      // Class-specific overlap-add state buffers
      int8_t classLookbackBufIdx_[5];
@@ -320,9 +229,9 @@ private:
             AudioFrame inputFrame;
             
             // Wait for input audio data
-            if (audioInputQueue_.tryPop(inputFrame)) {
+            if (audioInputBuffer_.tryPop(inputFrame)) {
                 // Add frame to ring buffer
-                ringBuffer_.write(reinterpret_cast<char*>(inputFrame.data));
+                ringBuffer_.writeChunk(reinterpret_cast<char*>(inputFrame.data), CHUNK_SIZE * sizeof(float));
                 
                 // Get windowed samples for FFT
                 getWindowSamples();
@@ -338,30 +247,18 @@ private:
                 
                 // Store FFT result
                 FFTData fftData;
-                for (size_t i = 0; i < FFT_SIZE; i++) {
-                    fftData.real[i] = fftOut_[i][0];  // Real part
-                    fftData.imag[i] = fftOut_[i][1];  // Imaginary part
-                }
+                fftData.copyFromFFTW(fftOut_);
                 
-                std::cout << "[FFT_THREAD] Processed frame, queue size: " << fftQueue_.size() << std::endl;
+                std::cout << "[FFT_THREAD] Processed frame, buffer size: " << fftBuffer_.size() << std::endl;
                 
 #if ENABLE_INFERENCE
-                // Send to ONNX inference queue
-                fftQueue_.push(fftData);
+                // Send to ONNX inference buffer
+                fftBuffer_.tryPush(fftData);
 #else
                 // Bypass inference: create fake ONNX output
                 ONNXOutput onnxOutput;
-                for (int classIdx = 0; classIdx < 5; classIdx++) {
-                    // Copy real parts (first 129 elements)
-                    for (size_t i = 0; i < FFT_SIZE; i++) {
-                        onnxOutput.classData[classIdx][i] = static_cast<float>(fftData.real[i]);
-                    }
-                    // Copy imaginary parts (next 129 elements)
-                    for (size_t i = 0; i < FFT_SIZE; i++) {
-                        onnxOutput.classData[classIdx][i + 129] = static_cast<float>(fftData.imag[i]);
-                    }
-                }
-                onnxOutputQueue_.push(onnxOutput);
+                onnxOutput.createFakeOutput(fftData);
+                onnxOutputBuffer_.tryPush(onnxOutput);
                 std::cout << "[FFT_THREAD] Bypassed inference, created fake output" << std::endl;
 #endif
                          }
@@ -379,14 +276,14 @@ private:
             FFTData fftData;
             
             // Wait for FFT data
-            if (fftQueue_.tryPop(fftData)) {
+            if (fftBuffer_.tryPop(fftData)) {
                 std::cout << "[ONNX_THREAD] Processing inference..." << std::endl;
                 
                 // Run ONNX inference
                 ONNXOutput onnxOutput;
                 if (runONNXInference(fftData, onnxOutput)) {
-                    onnxOutputQueue_.push(onnxOutput);
-                    std::cout << "[ONNX_THREAD] Inference completed, output queue size: " << onnxOutputQueue_.size() << std::endl;
+                    onnxOutputBuffer_.tryPush(onnxOutput);
+                    std::cout << "[ONNX_THREAD] Inference completed, output buffer size: " << onnxOutputBuffer_.size() << std::endl;
                 } else {
                     std::cerr << "[ONNX_THREAD] Inference failed" << std::endl;
                 }
@@ -405,7 +302,7 @@ private:
             ONNXOutput onnxOutput;
             
             // Wait for ONNX output
-            if (onnxOutputQueue_.tryPop(onnxOutput)) {
+            if (onnxOutputBuffer_.tryPop(onnxOutput)) {
                 std::cout << "[SYNTHESIS_THREAD] Processing synthesis..." << std::endl;
                 
                 // Process each class
@@ -420,7 +317,7 @@ private:
                 
                 // Compute weighted sum of all classes
                 AudioFrame outputFrame;
-                std::fill(outputFrame.data, outputFrame.data + CHUNK_SIZE, 0.0f);
+                outputFrame.clear();
                 
                 for (int classIdx = 0; classIdx < 5; classIdx++) {
                     for (int i = 0; i < CHUNK_SIZE; i++) {
@@ -428,9 +325,9 @@ private:
                     }
                 }
                 
-                // Push to output queue
-                audioOutputQueue_.push(outputFrame);
-                std::cout << "[SYNTHESIS_THREAD] Synthesis completed, output queue size: " << audioOutputQueue_.size() << std::endl;
+                // Push to output buffer
+                audioOutputBuffer_.tryPush(outputFrame);
+                std::cout << "[SYNTHESIS_THREAD] Synthesis completed, output buffer size: " << audioOutputBuffer_.size() << std::endl;
                          }
              // No sleep - continue immediately to check for new data
         }
@@ -439,88 +336,27 @@ private:
     }
     
     bool runONNXInference(const FFTData& fftData, ONNXOutput& output) {
-                 try {
-             // Prepare FFT data for ONNX (format: real(ch1) imag(ch1) real(ch2) imag(ch1))
-             // Use pre-allocated buffer - no dynamic allocation
-             for (size_t i = 0; i < FFT_SIZE; i++) {
-                 // Channel 1 real, Channel 1 imag, Channel 2 real, Channel 2 imag
-                 onnxInputBuffer_[i * 4 + 0] = static_cast<float>(fftData.real[i]);  // Ch1 real
-                 onnxInputBuffer_[i * 4 + 1] = static_cast<float>(fftData.imag[i]);  // Ch1 imag
-                 onnxInputBuffer_[i * 4 + 2] = static_cast<float>(fftData.real[i]);  // Ch2 real (duplicate)
-                 onnxInputBuffer_[i * 4 + 3] = static_cast<float>(fftData.imag[i]);  // Ch2 imag (duplicate)
-             }
+        try {
+            // Prepare input data using tensor manager (no allocation)
+            tensorManager_.prepareInputData(fftData);
             
-                         // Prepare input tensors (fixed arrays - no dynamic allocation)
-             const char* inputNames[16] = {
-                 "mixture_tf", "embedding", "conv_buf",
-                 "block_bufs::buf0::h0", "block_bufs::buf0::c0",
-                 "block_bufs::buf1::h0", "block_bufs::buf1::c0",
-                 "block_bufs::buf2::h0", "block_bufs::buf2::c0",
-                 "block_bufs::buf3::h0", "block_bufs::buf3::c0",
-                 "block_bufs::buf4::h0", "block_bufs::buf4::c0",
-                 "block_bufs::buf5::h0", "block_bufs::buf5::c0",
-                 "deconv_buf"
-             };
-             
-             const char* outputNames[15] = {
-                 "output", "out::conv_buf",
-                 "out::block_bufs::buf0::h0", "out::block_bufs::buf0::c0",
-                 "out::block_bufs::buf1::h0", "out::block_bufs::buf1::c0",
-                 "out::block_bufs::buf2::h0", "out::block_bufs::buf2::c0",
-                 "out::block_bufs::buf3::h0", "out::block_bufs::buf3::c0",
-                 "out::block_bufs::buf4::h0", "out::block_bufs::buf4::c0",
-                 "out::block_bufs::buf5::h0", "out::block_bufs::buf5::c0",
-                 "out::deconv_buf"
-             };
+            // Get pre-allocated tensors
+            Ort::Value* inputTensors = tensorManager_.getInputTensors();
+            if (!inputTensors) {
+                return false;
+            }
             
-                         // Create input tensors (fixed arrays - no dynamic allocation)
-             Ort::Value inputTensors[16];
-             int tensorCount = 0;
-             
-             // mixture_tf: 1x4x1x129
-             int64_t mixtureShape[4] = {1, 4, 1, 129};
-             inputTensors[tensorCount++] = Ort::Value::CreateTensor<float>(*memoryInfo_, 
-                 onnxInputBuffer_, 4 * 129, mixtureShape, 4);
-             
-             // embedding: 1x5
-             int64_t embeddingShape[2] = {1, 5};
-             inputTensors[tensorCount++] = Ort::Value::CreateTensor<float>(*memoryInfo_,
-                 embeddingInput_, 5, embeddingShape, 2);
-             
-             // conv_buf: 1x4x2x129
-             int64_t convBufShape[4] = {1, 4, 2, 129};
-             inputTensors[tensorCount++] = Ort::Value::CreateTensor<float>(*memoryInfo_,
-                 convBufInput_, 4 * 2 * 129, convBufShape, 4);
-             
-             // block_bufs (6 blocks, each with h0 and c0): 1x129x32
-             int64_t blockBufShape[3] = {1, 129, 32};
-             for (int i = 0; i < 6; i++) {
-                 inputTensors[tensorCount++] = Ort::Value::CreateTensor<float>(*memoryInfo_,
-                     blockBufsInput_[i][0], 129 * 32, blockBufShape, 3);
-                 inputTensors[tensorCount++] = Ort::Value::CreateTensor<float>(*memoryInfo_,
-                     blockBufsInput_[i][1], 129 * 32, blockBufShape, 3);
-             }
-             
-             // deconv_buf: 1x32x2x129
-             int64_t deconvBufShape[4] = {1, 32, 2, 129};
-             inputTensors[tensorCount++] = Ort::Value::CreateTensor<float>(*memoryInfo_,
-                 deconvBufInput_, 32 * 2 * 129, deconvBufShape, 4);
+            // Run inference using pre-allocated tensors
+            auto outputTensors = onnxSession_->Run(Ort::RunOptions{nullptr}, 
+                tensorManager_.getInputNames(), inputTensors, tensorManager_.getInputCount(),
+                tensorManager_.getOutputNames(), tensorManager_.getOutputCount());
             
-                         // Run inference
-             auto outputTensors = onnxSession_->Run(Ort::RunOptions{nullptr}, inputNames, 
-                 inputTensors, 16, outputNames, 15);
-            
-            // Extract main output (1x5x1x258)
+            // Extract output data using the new method
             float* outputData = outputTensors[0].GetTensorMutableData<float>();
+            output.copyFromONNX(outputData);
             
-                         // Copy output to result structure
-             for (int classIdx = 0; classIdx < 5; classIdx++) {
-                 std::copy(outputData + classIdx * 258, outputData + (classIdx + 1) * 258, 
-                          output.classData[classIdx]);
-             }
-            
-                         // Update state buffers for next iteration
-             updateStateBuffers(outputTensors.data());
+            // Update state buffers for next iteration (no allocation)
+            tensorManager_.updateStateBuffers(outputTensors);
             
             return true;
             
@@ -530,26 +366,7 @@ private:
         }
     }
     
-         void updateStateBuffers(Ort::Value* outputTensors) {
-         // Copy output buffers back to input buffers for next iteration
-         
-         // out::conv_buf -> conv_buf
-         float* convBufOut = outputTensors[1].GetTensorMutableData<float>();
-         std::copy(convBufOut, convBufOut + (4 * 2 * 129), convBufInput_);
-         
-         // out::block_bufs -> block_bufs
-         for (int i = 0; i < 6; i++) {
-             float* h0Out = outputTensors[2 + i * 2].GetTensorMutableData<float>();
-             float* c0Out = outputTensors[2 + i * 2 + 1].GetTensorMutableData<float>();
-             
-             std::copy(h0Out, h0Out + (129 * 32), blockBufsInput_[i][0]);
-             std::copy(c0Out, c0Out + (129 * 32), blockBufsInput_[i][1]);
-         }
-         
-         // out::deconv_buf -> deconv_buf
-         float* deconvBufOut = outputTensors[14].GetTensorMutableData<float>();
-         std::copy(deconvBufOut, deconvBufOut + (32 * 2 * 129), deconvBufInput_);
-     }
+
     
          void performIFFTForClass(int classIdx, const float* classOutput) {
         // Split real and imaginary parts (first 129 real, next 129 imaginary)
@@ -603,13 +420,7 @@ private:
     }
     
     void getWindowSamples() {
-        const std::vector<char>& buffer = ringBuffer_.getBuffer();
-        size_t writePos = ringBuffer_.getWritePosition();
-        
-        for (size_t i = 0; i < WINDOW_SIZE * sizeof(float); i++) {
-            size_t pos = (writePos - WINDOW_SIZE * sizeof(float) + i + buffer.size()) % buffer.size();
-            g_windowBuffer[i] = buffer[pos];
-        }
+        ringBuffer_.getWindowData(g_windowBuffer, WINDOW_SIZE * sizeof(float));
     }
 };
 

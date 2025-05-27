@@ -582,14 +582,14 @@ private:
         std::cout << "[FFT] Real: [" << fftRealMin << ", " << fftRealMax << "]"
                   << ", Imag: [" << fftImagMin << ", " << fftImagMax << "]" << std::endl;
 
-        // Prepare FFT data for ONNX (format: real(ch1) imag(ch1) real(ch2) imag(ch1))
+        // Prepare FFT data for ONNX (format: Real{channel1} Real{channel2} Imaginary{Channel1} Imaginary{Channel2})
         // Since we have mono input, we duplicate for 4 channels as required
         std::vector<float> fftData(4 * 129);  // 4 channels * 129 frequency bins
         for (size_t i = 0; i < FFT_SIZE; i++) {
-            // Channel 1 real, Channel 1 imag, Channel 2 real, Channel 2 imag
+            // Real{channel1}, Real{channel2}, Imaginary{Channel1}, Imaginary{Channel2}
             fftData[i * 4 + 0] = static_cast<float>(g_fftReal[i]);  // Ch1 real
-            fftData[i * 4 + 1] = static_cast<float>(g_fftImag[i]);  // Ch1 imag
-            fftData[i * 4 + 2] = static_cast<float>(g_fftReal[i]);  // Ch2 real (duplicate)
+            fftData[i * 4 + 1] = static_cast<float>(g_fftReal[i]);  // Ch2 real (duplicate)
+            fftData[i * 4 + 2] = static_cast<float>(g_fftImag[i]);  // Ch1 imag
             fftData[i * 4 + 3] = static_cast<float>(g_fftImag[i]);  // Ch2 imag (duplicate)
         }
         

@@ -3,7 +3,7 @@
 
 #include <jack/jack.h>
 #include <atomic>
-#include "audio_ringbuffer.h"
+#include "unified_ringbuffer.h"
 
 class AudioManager {
 public:
@@ -34,8 +34,8 @@ public:
     std::atomic<bool> is_running;
     jack_port_t* input_ports[2];   // 2 input ports (pre-allocated)
     jack_port_t* output_ports[2];  // 2 output ports for stereo (pre-allocated)
-    AudioRingBuffer input_ringbuffer;
-    AudioRingBuffer output_ringbuffer;
+    AudioIOBuffer input_ringbuffer;
+    AudioIOBuffer output_ringbuffer;
     
     // Pre-allocated buffers for JACK callback (no dynamic allocation)
     static constexpr size_t MAX_JACK_BUFFER_SIZE = 4096;  // Should be larger than any JACK buffer size

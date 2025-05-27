@@ -4,12 +4,12 @@ INCLUDES = -I/usr/include/onnxruntime -I/usr/include/onnxruntime/core/session
 LIBS = -ljack -lfftw3 -lonnxruntime -lpthread
 
 # Source files
-SOURCES = realtime_processor.cpp audio_manager.cpp static_buffers.cpp ringbuffer.cpp
+SOURCES = realtime_processor.cpp audio_manager.cpp static_buffers.cpp
 OBJECTS = $(SOURCES:.cpp=.o)
 TARGET = realtime_processor
 
 # Header dependencies
-HEADERS = audio_manager.h audio_ringbuffer.h audio_config.h static_buffers.h ringbuffer.h
+HEADERS = audio_manager.h audio_config.h static_buffers.h unified_ringbuffer.h lockfree_ringbuffer.h audio_data_structures.h onnx_tensor_manager.h
 
 # Default target
 all: $(TARGET)

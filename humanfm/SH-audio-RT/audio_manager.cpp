@@ -13,7 +13,7 @@
 #include <atomic>
 
 #include "audio_manager.h"
-#include "audio_ringbuffer.h"
+#include "unified_ringbuffer.h"
 
 #define JACK_CLIENT_NAME "SH-audio-RT"
 #define AUDIO_BUFFER_SIZE 1000000
@@ -107,8 +107,8 @@ void jack_callback_shutdown(void *arg) {
 
 // AudioManager implementation
 AudioManager::AudioManager() : 
-    input_ringbuffer(AUDIO_BUFFER_SIZE),
-    output_ringbuffer(AUDIO_BUFFER_SIZE),
+    input_ringbuffer(),
+    output_ringbuffer(),
     is_running(false),
     jack_client(nullptr),
     sampling_rate(16000),
