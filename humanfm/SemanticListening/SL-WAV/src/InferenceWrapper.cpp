@@ -107,10 +107,12 @@ void InferenceWrapper::clear_input(const std::string &input_name){
   std::vector<int64_t> shape = get_input_shape(input_name);
   auto total_number_elements = calculate_product(shape);
   
-  // Get raw data and zero it directly
-  int index = input_names_map[input_name];
-  float* tensor_buf = (float*) input_tensors[index].GetTensorMutableRawData();
-  memset(tensor_buf, 0, total_number_elements * sizeof(float));
+  // It would be faster to modify array directly
+  float *zero_arr = new float[total_number_elements];
+  memset(zero_arr, 0, total_number_elements * sizeof(float));
+  set_input(input_name, zero_arr);
+  delete [] zero_arr;
+
 }
 
 std::vector<std::int64_t> InferenceWrapper::get_input_shape(const std::string &input_name){
@@ -128,14 +130,7 @@ void InferenceWrapper::infer(){
 }
 
 InferenceWrapper::~InferenceWrapper(){
-  // Free input tensor data that was allocated during initialization
-  for (auto& tensor : input_tensors) {
-    if (tensor.IsTensor()) {
-      float* tensor_data = static_cast<float*>(tensor.GetTensorMutableRawData());
-      delete[] tensor_data;
-    }
-  }
-  
+  // TODO: Delete input tensors
   input_tensors.clear();
   output_tensors.clear();
   
@@ -146,4 +141,4 @@ InferenceWrapper::~InferenceWrapper(){
   delete [] input_names_in_order;
 
   delete session;
-} 
+}

@@ -46,4 +46,4 @@ class InferenceWrapper{
 };
 
 
-#endif 
+#endif
