@@ -4,10 +4,6 @@
 #include <cstdint>
 #include <complex>
 #include <algorithm>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <cstdlib>
@@ -56,79 +52,7 @@ struct ModelDimensions {
 // Global model dimensions (discovered once, used for all static allocations)
 static ModelDimensions g_modelDims;
 
-// Fixed-size queue for FFT data (sized based on discovered model dimensions)
-struct FFTDataQueue {
-    float* data;            // Will point to static array sized exactly for model
-    int head;
-    int tail;
-    int count;
-    int capacity;
-    int element_size;
-    
-    FFTDataQueue() : data(nullptr), head(0), tail(0), count(0), capacity(0), element_size(0) {}
-    
-    void initialize(float* buffer, int queue_capacity, int elem_size) {
-        data = buffer;
-        capacity = queue_capacity;
-        element_size = elem_size;
-        head = tail = count = 0;
-    }
-    
-    bool push(const float* fftData) {
-        if (count >= capacity) return false;
-        memcpy(data + tail * element_size, fftData, element_size * sizeof(float));
-        tail = (tail + 1) % capacity;
-        count++;
-        return true;
-    }
-    
-    bool pop(float* fftData) {
-        if (count <= 0) return false;
-        memcpy(fftData, data + head * element_size, element_size * sizeof(float));
-        head = (head + 1) % capacity;
-        count--;
-        return true;
-    }
-    
-    bool empty() const { return count == 0; }
-};
 
-// Fixed-size circular buffer for class outputs (sized based on discovered model dimensions)
-struct ClassOutputBuffer {
-    float* data;            // Will point to static array sized exactly for model
-    int head;
-    int tail;
-    int count;
-    int capacity;
-    int element_size;
-    
-    ClassOutputBuffer() : data(nullptr), head(0), tail(0), count(0), capacity(0), element_size(0) {}
-    
-    void initialize(float* buffer, int queue_capacity, int elem_size) {
-        data = buffer;
-        capacity = queue_capacity;
-        element_size = elem_size;
-        head = tail = count = 0;
-    }
-    
-    bool push(const float* outputData) {
-        if (count >= capacity) return false;
-        memcpy(data + tail * element_size, outputData, element_size * sizeof(float));
-        tail = (tail + 1) % capacity;
-        count++;
-        return true;
-    }
-    
-    bool pop(float* outputData) {
-        if (count <= 0) return false;
-        memcpy(outputData, data + head * element_size, element_size * sizeof(float));
-        head = (head + 1) % capacity;
-        count--;
-        return true;
-    }
-    
-    bool empty() const { return count == 0; }
-};
 
 class WAVProcessor {
 public:
@@ -163,9 +87,8 @@ public:
         buffersInitialized = false;
     }
 
-    // Destructor: Cleans up FFTW resources and stops ONNX thread
+    // Destructor: Cleans up FFTW resources
     ~WAVProcessor() {
-        stopSLModelThread();
         cleanupFFTW();
         // No need to delete slModel since it's now static
     }
@@ -214,8 +137,7 @@ public:
             }
         }
 
-        // Start SL Model inference thread
-        startSLModelThread();
+        // SL Model is now ready for synchronous inference
 
         // Read and validate main header
         if (!readAndValidateHeader(inFile)) {
@@ -336,17 +258,12 @@ private:
     bool initializeBuffers() {
         if (buffersInitialized) return true;
         
-        // Calculate total memory needed
+        // Calculate total memory needed (no queues needed for blocking inference)
         int fftDataSize = g_modelDims.fft_data_size;
         int outputDataSize = g_modelDims.output_data_size;
         int classOutputSize = g_modelDims.class_output_size;
-        int queueSize = g_modelDims.queue_size;
         
-        int queueStorageSize = queueSize * fftDataSize;
-        int classOutputStorageSize = NUM_CLASSES * queueSize * classOutputSize;
-        
-        int totalMemoryNeeded = fftDataSize + outputDataSize + classOutputSize + 
-                               queueStorageSize + classOutputStorageSize;
+        int totalMemoryNeeded = fftDataSize + outputDataSize + classOutputSize;
         
         if (totalMemoryNeeded > MAX_MEMORY_POOL_SIZE) {
             std::cerr << "Error: Model requires " << totalMemoryNeeded 
@@ -373,64 +290,15 @@ private:
         tempClassOutput = currentPtr;
         currentPtr += classOutputSize;
         
-        queueStorage = currentPtr;
-        currentPtr += queueStorageSize;
-        
-        // Set up class output storage pointers
-        for (int i = 0; i < NUM_CLASSES; i++) {
-            classOutputStorage[i] = currentPtr;
-            currentPtr += queueSize * classOutputSize;
-        }
-        
-        // Initialize queues with partitioned memory
-        slModelDataQueue.initialize(queueStorage, queueSize, fftDataSize);
-        
-        for (int i = 0; i < NUM_CLASSES; i++) {
-            classOutputs[i].initialize(classOutputStorage[i], queueSize, classOutputSize);
-        }
-        
         buffersInitialized = true;
         return true;
     }
     
-    // Start SL Model inference thread
-    void startSLModelThread() {
-        stopSlModelThread = false;
-        slModelThread = std::thread(&WAVProcessor::slModelInferenceLoop, this);
-    }
+
     
-    // Stop SL Model inference thread
-    void stopSLModelThread() {
-        stopSlModelThread = true;
-        slModelQueueCondition.notify_all();
-        if (slModelThread.joinable()) {
-            slModelThread.join();
-        }
-    }
-    
-    // SL Model inference loop running in separate thread
-    void slModelInferenceLoop() {
-        while (!stopSlModelThread) {
-            std::unique_lock<std::mutex> lock(slModelQueueMutex);
-            slModelQueueCondition.wait(lock, [this] { return !slModelDataQueue.empty() || stopSlModelThread; });
-            
-            if (stopSlModelThread) break;
-            
-            // Get FFT data from queue using static buffer
-            if (!slModelDataQueue.pop(fftDataBuffer)) {
-                lock.unlock();
-                continue;
-            }
-            lock.unlock();
-            
-            // Run SL Model inference
-            runSLModelInference(fftDataBuffer);
-        }
-    }
-    
-    // Run SL Model inference on FFT data
-    void runSLModelInference(const float* fftData) {
-        std::cout << "[SL Model] Starting inference..." << std::endl;
+    // Run SL Model inference on FFT data (blocking/synchronous)
+    bool runSLModelInference(const float* fftData) {
+        std::cout << "[SL Model] Starting blocking inference..." << std::endl;
         try {
             // Use static output buffer with exact size
             memset(outputDataBuffer, 0, g_modelDims.output_data_size * sizeof(float));
@@ -438,7 +306,7 @@ private:
             // Use SLModel's processFrame method
             if (!slModel.processFrame(const_cast<float*>(fftData), outputDataBuffer)) {
                 std::cerr << "Error in SL Model processFrame" << std::endl;
-                return;
+                return false;
             }
             
             // Debug: Print SL Model output statistics for each class (processing stereo input)
@@ -455,20 +323,12 @@ private:
                           << ", Mean: " << (sum / g_modelDims.class_output_size) << std::endl;
             }
             
-            // Process each class output using static buffers
-            std::lock_guard<std::mutex> lock(outputMutex);
-            for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
-                // Copy class data to temp buffer
-                memcpy(tempClassOutput, outputDataBuffer + classIdx * g_modelDims.class_output_size, 
-                       g_modelDims.class_output_size * sizeof(float));
-                // Push to class output buffer
-                classOutputs[classIdx].push(tempClassOutput);
-            }
-            
             std::cout << "[SL Model] Inference completed successfully" << std::endl;
+            return true;
             
         } catch (const std::exception& e) {
             std::cerr << "Error in SL Model inference: " << e.what() << std::endl;
+            return false;
         }
     }
 
@@ -721,69 +581,39 @@ private:
             fftDataBuffer[i * 4 + 3] = static_cast<float>(rightFftImag[i]);  // Right imag
         }
         
-        // Send FFT data to SL Model inference queue
-        {
-            std::lock_guard<std::mutex> lock(slModelQueueMutex);
-            slModelDataQueue.push(fftDataBuffer);
+        // Run SL Model inference synchronously (blocking)
+        if (!runSLModelInference(fftDataBuffer)) {
+            std::cerr << "Error: SL Model inference failed" << std::endl;
+            return false;
         }
-        slModelQueueCondition.notify_one();
 
-        // Wait 6ms to simulate real-time audio feeding and give SL Model time to process
-        std::cout << "[TIMING] Waiting 6ms for SL Model processing..." << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(6));
-        std::cout << "[TIMING] Resuming after 6ms delay" << std::endl;
-
-        // Process available SL Model outputs for each class
+        // Process SL Model outputs for each class immediately
         return processClassOutputs();
     }
 
     // Process SL Model outputs for each class and perform IFFT + overlap-add
     bool processClassOutputs() {
-        std::lock_guard<std::mutex> lock(outputMutex);
-        
-        // Check if we have outputs available for all classes
-        bool hasOutputs = true;
-        std::cout << "[QUEUE] Output queue sizes: ";
-        for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
-            std::cout << "C" << classIdx << ":" << classOutputs[classIdx].count << " ";
-            if (classOutputs[classIdx].empty()) {
-                hasOutputs = false;
-            }
-        }
-        std::cout << std::endl;
-        
-        if (!hasOutputs) {
-            // No outputs available yet, fill with zeros
-            std::cout << "[DEBUG] No SL Model outputs available yet, filling with zeros" << std::endl;
-            for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
-                memset(classOutputChunks[classIdx], 0, CHUNK_SIZE * sizeof(float));
-            }
-            return true;
-        }
-        
         std::cout << "[DEBUG] Processing SL Model outputs for all " << NUM_CLASSES << " classes" << std::endl;
         
-        // Process each class
+        // Process each class output directly from outputDataBuffer
         for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
-            // Get class output using static buffer
-            if (!classOutputs[classIdx].pop(tempClassOutput)) {
-                continue;
-            }
+            // Get class output directly from the output buffer
+            float* classData = outputDataBuffer + classIdx * g_modelDims.class_output_size;
             
             // Split real and imaginary parts into class-specific buffers (first 129 real, next 129 imaginary)
             for (size_t i = 0; i < FFT_SIZE; i++) {
-                classFftReal[classIdx][i] = static_cast<double>(tempClassOutput[i]);           // Real part
-                classFftImag[classIdx][i] = static_cast<double>(tempClassOutput[i + 129]);     // Imaginary part
+                classFftReal[classIdx][i] = static_cast<double>(classData[i]);           // Real part
+                classFftImag[classIdx][i] = static_cast<double>(classData[i + 129]);     // Imaginary part
             }
             
             // Perform IFFT for this class
             if (!performIFFTForClass(classIdx)) {
-            return false;
-        }
+                return false;
+            }
 
             // Perform overlap-add synthesis for this class
             if (!performOverlapAddForClass(classIdx)) {
-            return false;
+                return false;
             }
         }
 
@@ -925,17 +755,6 @@ private:
     SL_Model& slModel = reinterpret_cast<SL_Model&>(slModelStorage);
     bool slModelInitialized;
     
-    // Threading for SL Model inference
-    std::thread slModelThread;
-    std::atomic<bool> stopSlModelThread{false};
-    std::mutex slModelQueueMutex;
-    std::condition_variable slModelQueueCondition;
-    FFTDataQueue slModelDataQueue;  // Fixed-size queue with exact dimensions
-    
-    // SL Model output storage for each class (fixed-size buffers with exact dimensions)
-    ClassOutputBuffer classOutputs[NUM_CLASSES];
-    std::mutex outputMutex;
-    
     // Class-specific output buffers for overlap-add
     float classOutputChunks[NUM_CLASSES][CHUNK_SIZE];
     
@@ -963,8 +782,6 @@ private:
     float* fftDataBuffer;
     float* outputDataBuffer;
     float* tempClassOutput;
-    float* queueStorage;
-    float* classOutputStorage[NUM_CLASSES];
     
     float stereoBuffer[CHUNK_SIZE * 2];  // For reading stereo input
     float leftChunkBuffer[CHUNK_SIZE];   // Left channel buffer
