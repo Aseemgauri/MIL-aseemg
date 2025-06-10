@@ -59,6 +59,10 @@ public:
         std::memset(slModelOutputBuffer_, 0, sizeof(slModelOutputBuffer_));
         std::memset(currentAudioFrame_, 0, sizeof(currentAudioFrame_));
         std::memset(outputAudioFrame_, 0, sizeof(outputAudioFrame_));
+        std::memset(leftChannelFrame_, 0, sizeof(leftChannelFrame_));
+        std::memset(rightChannelFrame_, 0, sizeof(rightChannelFrame_));
+        std::memset(leftFftOut_, 0, sizeof(leftFftOut_));
+        std::memset(rightFftOut_, 0, sizeof(rightFftOut_));
     }
 
     ~RealtimeProcessor() {
@@ -80,10 +84,22 @@ public:
     
     // Single-threaded audio processing - called by audio manager in real-time callback
     void processAudio(const float* stereoInput, float* monoOutput, size_t numSamples) {
-        // Convert stereo to mono and store in current frame
+        // Input is already deinterleaved: left samples first, then right samples
         const size_t samplesToProcess = std::min(numSamples / 2, (size_t)CHUNK_SIZE);
+        
+        // Copy left channel samples (first half of input)
         for (size_t i = 0; i < samplesToProcess; i++) {
-            currentAudioFrame_[i] = (stereoInput[i * 2] + stereoInput[i * 2 + 1]) * 0.5f;
+            leftChannelFrame_[i] = stereoInput[i];  // Left channel samples are first
+        }
+        
+        // Copy right channel samples (second half of input)
+        for (size_t i = 0; i < samplesToProcess; i++) {
+            rightChannelFrame_[i] = stereoInput[i + samplesToProcess];  // Right channel samples follow
+        }
+        
+        // For passthrough mode, mix stereo to mono for output compatibility
+        for (size_t i = 0; i < samplesToProcess; i++) {
+            currentAudioFrame_[i] = (leftChannelFrame_[i] + rightChannelFrame_[i]) * 0.5f;
         }
         
 #if ENABLE_PASSTHROUGH
@@ -128,6 +144,14 @@ private:
     float currentAudioFrame_[CHUNK_SIZE];  // Current input audio frame
     float outputAudioFrame_[CHUNK_SIZE];   // Current output audio frame
     
+    // Stereo channel buffers
+    float leftChannelFrame_[CHUNK_SIZE];   // Left channel buffer
+    float rightChannelFrame_[CHUNK_SIZE];  // Right channel buffer
+    
+    // Stereo FFT buffers
+    fftw_complex leftFftOut_[FFT_SIZE];
+    fftw_complex rightFftOut_[FFT_SIZE];
+    
     void initializeFFTW() {
         // Initialize FFT
         fftIn_ = fftw_alloc_real(WINDOW_SIZE);
@@ -151,20 +175,43 @@ private:
     
     // Single-threaded processing pipeline
     void processAudioFrame() {
-        // Add frame to ring buffer
-        ringBuffer_.writeChunk(reinterpret_cast<char*>(currentAudioFrame_), CHUNK_SIZE * sizeof(float));
-        
-        // Get windowed samples for FFT
-        getWindowSamples();
-        
-        // Apply analysis window and copy to FFT input
-        for (size_t i = 0; i < WINDOW_SIZE; i++) {
-            float sample = *reinterpret_cast<const float*>(&g_windowBuffer[i * sizeof(float)]);
-            fftIn_[i] = static_cast<double>(sample) * g_analysisWindow[i];
+        // Process left channel FFT
+        // Apply analysis window to left channel
+        for (size_t i = 0; i < CHUNK_SIZE; i++) {
+            fftIn_[i] = static_cast<double>(leftChannelFrame_[i]) * g_analysisWindow[i];
+        }
+        // Zero-pad the rest of the window
+        for (size_t i = CHUNK_SIZE; i < WINDOW_SIZE; i++) {
+            fftIn_[i] = 0.0;
         }
         
-        // Perform FFT
+        // Perform FFT on left channel
         fftw_execute(fftPlan_);
+        
+        // Store left channel FFT results
+        for (size_t i = 0; i < FFT_SIZE; i++) {
+            leftFftOut_[i][0] = fftOut_[i][0];  // Real part
+            leftFftOut_[i][1] = fftOut_[i][1];  // Imaginary part
+        }
+        
+        // Process right channel FFT
+        // Apply analysis window to right channel
+        for (size_t i = 0; i < CHUNK_SIZE; i++) {
+            fftIn_[i] = static_cast<double>(rightChannelFrame_[i]) * g_analysisWindow[i];
+        }
+        // Zero-pad the rest of the window
+        for (size_t i = CHUNK_SIZE; i < WINDOW_SIZE; i++) {
+            fftIn_[i] = 0.0;
+        }
+        
+        // Perform FFT on right channel
+        fftw_execute(fftPlan_);
+        
+        // Store right channel FFT results
+        for (size_t i = 0; i < FFT_SIZE; i++) {
+            rightFftOut_[i][0] = fftOut_[i][0];  // Real part
+            rightFftOut_[i][1] = fftOut_[i][1];  // Imaginary part
+        }
         
         // Prepare FFT data for SL_Model or bypass
 #if ENABLE_INFERENCE
@@ -185,14 +232,13 @@ private:
     
     bool runSLModelInference() {
         try {
-            // Prepare FFT data for SL_Model (format: Real{channel1} Real{channel2} Imaginary{Channel1} Imaginary{Channel2})
-            // Since we have mono input, we duplicate for 4 channels as required
+            // Prepare FFT data for SL_Model with true stereo data
+            // Format: Left_Real, Left_Imag, Right_Real, Right_Imag (interleaved per frequency bin)
             for (size_t i = 0; i < FFT_SIZE; i++) {
-                // Real{channel1}, Real{channel2}, Imaginary{Channel1}, Imaginary{Channel2}
-                fftInputBuffer_[i * 4 + 0] = static_cast<float>(fftOut_[i][0]);  // Ch1 real
-                fftInputBuffer_[i * 4 + 1] = static_cast<float>(fftOut_[i][0]);  // Ch2 real (duplicate)
-                fftInputBuffer_[i * 4 + 2] = static_cast<float>(fftOut_[i][1]);  // Ch1 imag
-                fftInputBuffer_[i * 4 + 3] = static_cast<float>(fftOut_[i][1]);  // Ch2 imag (duplicate)
+                fftInputBuffer_[i * 4 + 0] = static_cast<float>(leftFftOut_[i][0]);   // Left real
+                fftInputBuffer_[i * 4 + 1] = static_cast<float>(leftFftOut_[i][1]);   // Left imag
+                fftInputBuffer_[i * 4 + 2] = static_cast<float>(rightFftOut_[i][0]);  // Right real
+                fftInputBuffer_[i * 4 + 3] = static_cast<float>(rightFftOut_[i][1]);  // Right imag
             }
             
             // Use SL_Model's processFrame method with pre-allocated buffers
@@ -210,18 +256,22 @@ private:
     }
     
     void createFakeOutput() {
-        // Create fake output by duplicating FFT data for all NUM_CLASSES classes
+        // Create fake output by mixing stereo FFT data for all NUM_CLASSES classes
         for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
             int outputOffset = classIdx * 258;  // 258 = 129 real + 129 imag
             
-            // Copy real parts
+            // Mix left and right channels for fake output (copy real parts)
             for (size_t i = 0; i < FFT_SIZE; i++) {
-                slModelOutputBuffer_[outputOffset + i] = static_cast<float>(fftOut_[i][0]);
+                // Average left and right real parts
+                slModelOutputBuffer_[outputOffset + i] = static_cast<float>(
+                    (leftFftOut_[i][0] + rightFftOut_[i][0]) * 0.5);
             }
             
-            // Copy imaginary parts
+            // Mix left and right channels for fake output (copy imaginary parts)
             for (size_t i = 0; i < FFT_SIZE; i++) {
-                slModelOutputBuffer_[outputOffset + 129 + i] = static_cast<float>(fftOut_[i][1]);
+                // Average left and right imaginary parts
+                slModelOutputBuffer_[outputOffset + 129 + i] = static_cast<float>(
+                    (leftFftOut_[i][1] + rightFftOut_[i][1]) * 0.5);
             }
         }
     }

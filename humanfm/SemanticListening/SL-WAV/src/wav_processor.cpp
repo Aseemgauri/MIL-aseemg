@@ -441,7 +441,7 @@ private:
                 return;
             }
             
-            // Debug: Print SL Model output statistics for each class
+            // Debug: Print SL Model output statistics for each class (processing stereo input)
             for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
                 float* classData = outputDataBuffer + classIdx * g_modelDims.class_output_size;
                 float minVal = classData[0], maxVal = classData[0], sum = 0.0f;
@@ -622,76 +622,103 @@ private:
         
         totalBytesRead += bytesToRead;
         
-        // Convert stereo to mono and store in chunk buffer
-        size_t monoSamples = samplesRead / 2;
-        for (size_t i = 0; i < monoSamples; i++) {
-            // Average left and right channels
-            g_chunkBuffer[i] = (stereoBuffer[i * 2] + stereoBuffer[i * 2 + 1]) / 2.0f;
+        // Separate stereo channels instead of converting to mono
+        size_t stereoSamples = samplesRead / 2;
+        for (size_t i = 0; i < stereoSamples; i++) {
+            leftChunkBuffer[i] = stereoBuffer[i * 2];      // Left channel
+            rightChunkBuffer[i] = stereoBuffer[i * 2 + 1]; // Right channel
         }
         
         // Fill remaining samples with zeros if needed
-        for (size_t i = monoSamples; i < CHUNK_SIZE; i++) {
-            g_chunkBuffer[i] = 0.0f;
+        for (size_t i = stereoSamples; i < CHUNK_SIZE; i++) {
+            leftChunkBuffer[i] = 0.0f;
+            rightChunkBuffer[i] = 0.0f;
         }
         
-        // Debug: Print chunk statistics
-        float chunkMin = g_chunkBuffer[0], chunkMax = g_chunkBuffer[0];
-        float chunkSum = 0.0f;
+        // Debug: Print stereo chunk statistics
+        float leftMin = leftChunkBuffer[0], leftMax = leftChunkBuffer[0], leftSum = 0.0f;
+        float rightMin = rightChunkBuffer[0], rightMax = rightChunkBuffer[0], rightSum = 0.0f;
         for (size_t i = 0; i < CHUNK_SIZE; i++) {
-            chunkMin = std::min(chunkMin, g_chunkBuffer[i]);
-            chunkMax = std::max(chunkMax, g_chunkBuffer[i]);
-            chunkSum += g_chunkBuffer[i];
+            leftMin = std::min(leftMin, leftChunkBuffer[i]);
+            leftMax = std::max(leftMax, leftChunkBuffer[i]);
+            leftSum += leftChunkBuffer[i];
+            rightMin = std::min(rightMin, rightChunkBuffer[i]);
+            rightMax = std::max(rightMax, rightChunkBuffer[i]);
+            rightSum += rightChunkBuffer[i];
         }
-        std::cout << "[INPUT] Chunk Range: [" << chunkMin << ", " << chunkMax << "]"
-                  << ", Mean: " << (chunkSum / CHUNK_SIZE) << std::endl;
+        std::cout << "[INPUT] Left: [" << leftMin << ", " << leftMax << "], Mean: " << (leftSum / CHUNK_SIZE)
+                  << " | Right: [" << rightMin << ", " << rightMax << "], Mean: " << (rightSum / CHUNK_SIZE) << std::endl;
         
         return processChunk();
     }
 
     // Processes a single chunk of audio data through FFT and SL Model inference
     bool processChunk() {
-        // Add the chunk to the ring buffer
-        ringBuffer.write(reinterpret_cast<char*>(g_chunkBuffer));
-        
-        // Get the window of samples for FFT analysis
-        getWindowSamples();
-        
-        // Apply analysis window and copy to FFT input
-        for (size_t i = 0; i < WINDOW_SIZE; i++) {
-            float sample = *reinterpret_cast<const float*>(&g_windowBuffer[i * sizeof(float)]);
-            fftInBuffer[i] = static_cast<double>(sample) * g_analysisWindow[i];
+        // Process left channel FFT
+        // Apply analysis window to left channel
+        for (size_t i = 0; i < CHUNK_SIZE; i++) {
+            fftInBuffer[i] = static_cast<double>(leftChunkBuffer[i]) * g_analysisWindow[i];
+        }
+        // Zero-pad the rest of the window
+        for (size_t i = CHUNK_SIZE; i < WINDOW_SIZE; i++) {
+            fftInBuffer[i] = 0.0;
         }
         
-        // Perform FFT
+        // Perform FFT on left channel
         fftw_execute(fftPlan);
         
-        // Store real and imaginary components
+        // Store left channel FFT results
         for (size_t i = 0; i < FFT_SIZE; i++) {
-            g_fftReal[i] = fftOutBuffer[i][0];  // Real part
-            g_fftImag[i] = fftOutBuffer[i][1];  // Imaginary part
+            leftFftReal[i] = fftOutBuffer[i][0];  // Real part
+            leftFftImag[i] = fftOutBuffer[i][1];  // Imaginary part
+        }
+        
+        // Process right channel FFT
+        // Apply analysis window to right channel
+        for (size_t i = 0; i < CHUNK_SIZE; i++) {
+            fftInBuffer[i] = static_cast<double>(rightChunkBuffer[i]) * g_analysisWindow[i];
+        }
+        // Zero-pad the rest of the window
+        for (size_t i = CHUNK_SIZE; i < WINDOW_SIZE; i++) {
+            fftInBuffer[i] = 0.0;
+        }
+        
+        // Perform FFT on right channel
+        fftw_execute(fftPlan);
+        
+        // Store right channel FFT results
+        for (size_t i = 0; i < FFT_SIZE; i++) {
+            rightFftReal[i] = fftOutBuffer[i][0];  // Real part
+            rightFftImag[i] = fftOutBuffer[i][1];  // Imaginary part
         }
 
-        // Debug: Print FFT output statistics
-        double fftRealMin = g_fftReal[0], fftRealMax = g_fftReal[0];
-        double fftImagMin = g_fftImag[0], fftImagMax = g_fftImag[0];
+        // Debug: Print stereo FFT output statistics
+        double leftRealMin = leftFftReal[0], leftRealMax = leftFftReal[0];
+        double leftImagMin = leftFftImag[0], leftImagMax = leftFftImag[0];
+        double rightRealMin = rightFftReal[0], rightRealMax = rightFftReal[0];
+        double rightImagMin = rightFftImag[0], rightImagMax = rightFftImag[0];
         for (size_t i = 0; i < FFT_SIZE; i++) {
-            fftRealMin = std::min(fftRealMin, g_fftReal[i]);
-            fftRealMax = std::max(fftRealMax, g_fftReal[i]);
-            fftImagMin = std::min(fftImagMin, g_fftImag[i]);
-            fftImagMax = std::max(fftImagMax, g_fftImag[i]);
+            leftRealMin = std::min(leftRealMin, leftFftReal[i]);
+            leftRealMax = std::max(leftRealMax, leftFftReal[i]);
+            leftImagMin = std::min(leftImagMin, leftFftImag[i]);
+            leftImagMax = std::max(leftImagMax, leftFftImag[i]);
+            rightRealMin = std::min(rightRealMin, rightFftReal[i]);
+            rightRealMax = std::max(rightRealMax, rightFftReal[i]);
+            rightImagMin = std::min(rightImagMin, rightFftImag[i]);
+            rightImagMax = std::max(rightImagMax, rightFftImag[i]);
         }
-        std::cout << "[FFT] Real: [" << fftRealMin << ", " << fftRealMax << "]"
-                  << ", Imag: [" << fftImagMin << ", " << fftImagMax << "]" << std::endl;
+        std::cout << "[FFT] Left Real: [" << leftRealMin << ", " << leftRealMax << "]"
+                  << ", Left Imag: [" << leftImagMin << ", " << leftImagMax << "]" << std::endl;
+        std::cout << "[FFT] Right Real: [" << rightRealMin << ", " << rightRealMax << "]"
+                  << ", Right Imag: [" << rightImagMin << ", " << rightImagMax << "]" << std::endl;
 
         // Prepare FFT data for SL Model using static buffer with exact size
-        // Format: Real{channel1} Real{channel2} Imaginary{Channel1} Imaginary{Channel2}
-        // Since we have mono input, we duplicate for 4 channels as required
+        // Format: Left_Real, Left_Imag, Right_Real, Right_Imag (interleaved per frequency bin)
         for (size_t i = 0; i < FFT_SIZE; i++) {
-            // Real{channel1}, Real{channel2}, Imaginary{Channel1}, Imaginary{Channel2}
-            fftDataBuffer[i * 4 + 0] = static_cast<float>(g_fftReal[i]);  // Ch1 real
-            fftDataBuffer[i * 4 + 1] = static_cast<float>(g_fftReal[i]);  // Ch2 real (duplicate)
-            fftDataBuffer[i * 4 + 2] = static_cast<float>(g_fftImag[i]);  // Ch1 imag
-            fftDataBuffer[i * 4 + 3] = static_cast<float>(g_fftImag[i]);  // Ch2 imag (duplicate)
+            fftDataBuffer[i * 4 + 0] = static_cast<float>(leftFftReal[i]);   // Left real
+            fftDataBuffer[i * 4 + 1] = static_cast<float>(leftFftImag[i]);   // Left imag
+            fftDataBuffer[i * 4 + 2] = static_cast<float>(rightFftReal[i]);  // Right real
+            fftDataBuffer[i * 4 + 3] = static_cast<float>(rightFftImag[i]);  // Right imag
         }
         
         // Send FFT data to SL Model inference queue
@@ -922,6 +949,12 @@ private:
     double classFftReal[NUM_CLASSES][FFT_SIZE];
     double classFftImag[NUM_CLASSES][FFT_SIZE];
     
+    // Stereo FFT buffers
+    double leftFftReal[FFT_SIZE];
+    double leftFftImag[FFT_SIZE];
+    double rightFftReal[FFT_SIZE];
+    double rightFftImag[FFT_SIZE];
+    
     // Static buffers sized exactly based on discovered model dimensions
     static const int MAX_MEMORY_POOL_SIZE = 65536;  // Large enough for any reasonable model
     float memoryPool[MAX_MEMORY_POOL_SIZE];
@@ -934,6 +967,8 @@ private:
     float* classOutputStorage[NUM_CLASSES];
     
     float stereoBuffer[CHUNK_SIZE * 2];  // For reading stereo input
+    float leftChunkBuffer[CHUNK_SIZE];   // Left channel buffer
+    float rightChunkBuffer[CHUNK_SIZE];  // Right channel buffer
     
     bool buffersInitialized;
 };

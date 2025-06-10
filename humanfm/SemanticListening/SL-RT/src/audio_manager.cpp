@@ -43,15 +43,17 @@ int jack_callback_process(jack_nframes_t nframes, void *arg) {
     jack_default_audio_sample_t *in0 = (jack_default_audio_sample_t *)jack_port_get_buffer(audio_manager->input_ports[0], nframes);
     jack_default_audio_sample_t *in1 = (jack_default_audio_sample_t *)jack_port_get_buffer(audio_manager->input_ports[1], nframes);
     
-    // Interleave stereo samples using pre-allocated buffer (no dynamic allocation)
+    // Copy samples to separate channel buffers
     for (jack_nframes_t i = 0; i < nframes; i++) {
-        audio_manager->interleaved_buffer[i * 2] = in0[i];     // Left channel
-        audio_manager->interleaved_buffer[i * 2 + 1] = in1[i]; // Right channel
+        audio_manager->left_buffer[i] = in0[i];   // Left channel
+        audio_manager->right_buffer[i] = in1[i];  // Right channel
     }
     
-    // Write interleaved data to ring buffer
-    audio_manager->input_ringbuffer.write(reinterpret_cast<char*>(audio_manager->interleaved_buffer), 
-                                         nframes * 2 * sizeof(float));
+    // Write to separate ring buffers
+    audio_manager->left_input_ringbuffer.write(reinterpret_cast<char*>(audio_manager->left_buffer), 
+                                              nframes * sizeof(float));
+    audio_manager->right_input_ringbuffer.write(reinterpret_cast<char*>(audio_manager->right_buffer), 
+                                               nframes * sizeof(float));
     
     // Read processed output from output ring buffer and clone to both stereo channels
     jack_default_audio_sample_t *out_left = (jack_default_audio_sample_t *)jack_port_get_buffer(audio_manager->output_ports[0], nframes);
@@ -107,7 +109,8 @@ void jack_callback_shutdown(void *arg) {
 
 // AudioManager implementation
 AudioManager::AudioManager() : 
-    input_ringbuffer(),
+    left_input_ringbuffer(),
+    right_input_ringbuffer(),
     output_ringbuffer(),
     is_running(false),
     jack_client(nullptr),
@@ -291,16 +294,28 @@ void AudioManager::cleanup() {
     }
 }
 
-// Get input data from ring buffer (stereo interleaved)
+// Get input data from separate ring buffers (left samples first, then right samples)
 bool AudioManager::getInputData(float* buffer, size_t num_samples) {
-    size_t bytes_needed = num_samples * sizeof(float);
-    size_t available_bytes = input_ringbuffer.getAvailableBytes();
+    size_t samples_per_channel = num_samples / 2;
+    size_t bytes_per_channel = samples_per_channel * sizeof(float);
     
-    if (available_bytes < bytes_needed) {
-        return false; // Not enough data available
+    // Check if both channels have enough data
+    if (left_input_ringbuffer.getAvailableBytes() < bytes_per_channel ||
+        right_input_ringbuffer.getAvailableBytes() < bytes_per_channel) {
+        return false; // Not enough data available in one or both channels
     }
     
-    return input_ringbuffer.read(reinterpret_cast<char*>(buffer), bytes_needed);
+    // Read left channel first
+    if (!left_input_ringbuffer.read(reinterpret_cast<char*>(buffer), bytes_per_channel)) {
+        return false;
+    }
+    
+    // Read right channel second
+    if (!right_input_ringbuffer.read(reinterpret_cast<char*>(buffer + samples_per_channel), bytes_per_channel)) {
+        return false;
+    }
+    
+    return true;
 }
 
 // Write output data to ring buffer
@@ -309,9 +324,12 @@ bool AudioManager::writeOutputData(const float* buffer, size_t num_samples) {
     return output_ringbuffer.write(reinterpret_cast<const char*>(buffer), bytes_to_write);
 }
 
-// Get available input samples
+// Get available input samples (return minimum of both channels * 2)
 size_t AudioManager::getAvailableInputSamples() const {
-    return input_ringbuffer.getAvailableBytes() / sizeof(float);
+    size_t left_samples = left_input_ringbuffer.getAvailableBytes() / sizeof(float);
+    size_t right_samples = right_input_ringbuffer.getAvailableBytes() / sizeof(float);
+    // Return the minimum of both channels, multiplied by 2 for stereo
+    return std::min(left_samples, right_samples) * 2;
 }
 
 // Get available space in output buffer
