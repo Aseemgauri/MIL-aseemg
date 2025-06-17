@@ -5,15 +5,15 @@
 // Define static buffers
 double g_previousBuffer[BUFFER_SIZE] = {0};
 double g_currentBuffer[BUFFER_SIZE] = {0};
-double g_synthesisBuffer[WINDOW_SIZE] = {0};
-double g_fftReal[FFT_SIZE] = {0};
-double g_fftImag[FFT_SIZE] = {0};
-double g_ifftResult[WINDOW_SIZE] = {0};
-char g_windowBuffer[WINDOW_SIZE * sizeof(float)] = {0};
+double g_synthesisBuffer[NFFT] = {0};
+double g_fftReal[FFT_OUT_SIZE] = {0};
+double g_fftImag[FFT_OUT_SIZE] = {0};
+double g_ifftResult[NFFT] = {0};
+char g_windowBuffer[NFFT * sizeof(float)] = {0};
 float g_chunkBuffer[CHUNK_SIZE] = {0};
 
 // Define window buffers
-double g_analysisWindow[WINDOW_SIZE] = {0};
+double g_analysisWindow[NFFT] = {0};
 double g_synthesisWindow[ISTFT_OUTPUT_SIZE] = {0};
 
 // ISTFT context buffers
@@ -28,18 +28,23 @@ double* getIstftContextBuffer(int8_t lookbackIdx) {
 
 // Initialize windows with perfect reconstruction
 void initializeWindows() {
-    const double PI = 3.14159265358979323846;
+    //const double PI = 3.14159265358979323846;
     
     // Compute Hanning window for analysis
-    for (int i = 0; i < WINDOW_SIZE; i++) {
-        g_analysisWindow[i] = 0.5 * (1.0 - cos(2.0 * PI * i / (WINDOW_SIZE - 1)));
+    // for (int i = 0; i < NFFT; i++) {
+    //     g_analysisWindow[i] = 0.5 * (1.0 - cos(2.0 * PI * i / (NFFT - 1)));
+    // }
+    
+    // Set analysis window to all 1s (no windowing)
+    for (int i = 0; i < NFFT; i++) {
+        g_analysisWindow[i] = 1.0;
     }
     
     // Compute perfect synthesis window
     int oWS = ISTFT_OUTPUT_SIZE;  // Output window size
     int A = oWS;                  // Synthesis window size
     int B = CHUNK_SIZE;           // Chunk size
-    int N = WINDOW_SIZE;          // FFT size
+    int N = NFFT;          // FFT size
     
     if ((A % B) == 0) {
         // Case 1: Output window size is a multiple of chunk size

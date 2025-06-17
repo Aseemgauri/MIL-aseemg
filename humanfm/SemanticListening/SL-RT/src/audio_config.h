@@ -7,9 +7,9 @@
 #define CHUNK_SIZE 96     // Size of each audio chunk
 #define LB_SIZE 96       // Lookback size
 #define LF_SIZE 64        // Look forward size
-#define WINDOW_SIZE (LB_SIZE + CHUNK_SIZE + LF_SIZE)  // Total window size
-#define FFT_SIZE (WINDOW_SIZE/2 + 1)  // Size of FFT output (real + imaginary)
-#define BUFFER_SIZE (WINDOW_SIZE - LB_SIZE)  // Size of synthesis buffers
+#define NFFT (LB_SIZE + CHUNK_SIZE + LF_SIZE)  // Total window size
+#define FFT_OUT_SIZE (NFFT/2 + 1)  // Size of FFT output (real + imaginary)
+#define BUFFER_SIZE (NFFT - LB_SIZE)  // Size of synthesis buffers
 
 // ISTFT parameters
 #define ISTFT_OUTPUT_SIZE (CHUNK_SIZE + LF_SIZE)
@@ -21,15 +21,15 @@
 // Static buffer declarations
 extern double g_previousBuffer[BUFFER_SIZE];
 extern double g_currentBuffer[BUFFER_SIZE];
-extern double g_synthesisBuffer[WINDOW_SIZE];
-extern double g_fftReal[FFT_SIZE];
-extern double g_fftImag[FFT_SIZE];
-extern double g_ifftResult[WINDOW_SIZE];
-extern char g_windowBuffer[WINDOW_SIZE * sizeof(float)];
+extern double g_synthesisBuffer[NFFT];
+extern double g_fftReal[FFT_OUT_SIZE];
+extern double g_fftImag[FFT_OUT_SIZE];
+extern double g_ifftResult[NFFT];
+extern char g_windowBuffer[NFFT * sizeof(float)];
 extern char g_chunkBuffer[CHUNK_SIZE * sizeof(float)];
 
 // Precomputed window declarations
-extern double g_analysisWindow[WINDOW_SIZE];  // Analysis window
+extern double g_analysisWindow[NFFT];  // Analysis window
 extern double g_synthesisWindow[ISTFT_OUTPUT_SIZE]; // Synthesis window
 
 // ISTFT context declarations

@@ -38,7 +38,7 @@ public:
         for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
             classLookbackBufIdx_[classIdx] = 0;
             std::memset(classCurrentBuffer_[classIdx], 0, BUFFER_SIZE * sizeof(double));
-            std::memset(classIfftResult_[classIdx], 0, WINDOW_SIZE * sizeof(double));
+            std::memset(classIfftResult_[classIdx], 0, NFFT * sizeof(double));
             for (int bufIdx = 0; bufIdx < ISTFT_LOOKBACK_BUFFERS; bufIdx++) {
                 std::memset(classIstftContextBuffers_[classIdx][bufIdx], 0, 
                            ISTFT_OUTPUT_SIZE * sizeof(double));
@@ -133,7 +133,7 @@ private:
     int8_t classLookbackBufIdx_[NUM_CLASSES];
     double classIstftContextBuffers_[NUM_CLASSES][ISTFT_LOOKBACK_BUFFERS][ISTFT_OUTPUT_SIZE];
     double classCurrentBuffer_[NUM_CLASSES][BUFFER_SIZE];
-    double classIfftResult_[NUM_CLASSES][WINDOW_SIZE];
+    double classIfftResult_[NUM_CLASSES][NFFT];
      
     // Weighted sum coefficients (pre-allocated)
     float classWeights_[NUM_CLASSES];
@@ -149,19 +149,19 @@ private:
     float rightChannelFrame_[CHUNK_SIZE];  // Right channel buffer
     
     // Stereo FFT buffers
-    fftw_complex leftFftOut_[FFT_SIZE];
-    fftw_complex rightFftOut_[FFT_SIZE];
+    fftw_complex leftFftOut_[FFT_OUT_SIZE];
+    fftw_complex rightFftOut_[FFT_OUT_SIZE];
     
     void initializeFFTW() {
         // Initialize FFT
-        fftIn_ = fftw_alloc_real(WINDOW_SIZE);
-        fftOut_ = fftw_alloc_complex(FFT_SIZE);
-        fftPlan_ = fftw_plan_dft_r2c_1d(WINDOW_SIZE, fftIn_, fftOut_, FFTW_ESTIMATE);
+        fftIn_ = fftw_alloc_real(NFFT);
+        fftOut_ = fftw_alloc_complex(FFT_OUT_SIZE);
+        fftPlan_ = fftw_plan_dft_r2c_1d(NFFT, fftIn_, fftOut_, FFTW_ESTIMATE);
         
         // Initialize IFFT
-        ifftIn_ = fftw_alloc_complex(FFT_SIZE);
-        ifftOut_ = fftw_alloc_real(WINDOW_SIZE);
-        ifftPlan_ = fftw_plan_dft_c2r_1d(WINDOW_SIZE, ifftIn_, ifftOut_, FFTW_ESTIMATE);
+        ifftIn_ = fftw_alloc_complex(FFT_OUT_SIZE);
+        ifftOut_ = fftw_alloc_real(NFFT);
+        ifftPlan_ = fftw_plan_dft_c2r_1d(NFFT, ifftIn_, ifftOut_, FFTW_ESTIMATE);
     }
 
     void cleanupFFTW() {
@@ -181,7 +181,7 @@ private:
             fftIn_[i] = static_cast<double>(leftChannelFrame_[i]) * g_analysisWindow[i];
         }
         // Zero-pad the rest of the window
-        for (size_t i = CHUNK_SIZE; i < WINDOW_SIZE; i++) {
+        for (size_t i = CHUNK_SIZE; i < NFFT; i++) {
             fftIn_[i] = 0.0;
         }
         
@@ -189,7 +189,7 @@ private:
         fftw_execute(fftPlan_);
         
         // Store left channel FFT results
-        for (size_t i = 0; i < FFT_SIZE; i++) {
+        for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
             leftFftOut_[i][0] = fftOut_[i][0];  // Real part
             leftFftOut_[i][1] = fftOut_[i][1];  // Imaginary part
         }
@@ -200,7 +200,7 @@ private:
             fftIn_[i] = static_cast<double>(rightChannelFrame_[i]) * g_analysisWindow[i];
         }
         // Zero-pad the rest of the window
-        for (size_t i = CHUNK_SIZE; i < WINDOW_SIZE; i++) {
+        for (size_t i = CHUNK_SIZE; i < NFFT; i++) {
             fftIn_[i] = 0.0;
         }
         
@@ -208,7 +208,7 @@ private:
         fftw_execute(fftPlan_);
         
         // Store right channel FFT results
-        for (size_t i = 0; i < FFT_SIZE; i++) {
+        for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
             rightFftOut_[i][0] = fftOut_[i][0];  // Real part
             rightFftOut_[i][1] = fftOut_[i][1];  // Imaginary part
         }
@@ -234,7 +234,7 @@ private:
         try {
             // Prepare FFT data for SL_Model with true stereo data
             // Format: Left_Real, Left_Imag, Right_Real, Right_Imag (interleaved per frequency bin)
-            for (size_t i = 0; i < FFT_SIZE; i++) {
+            for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
                 fftInputBuffer_[i * 4 + 0] = static_cast<float>(leftFftOut_[i][0]);   // Left real
                 fftInputBuffer_[i * 4 + 1] = static_cast<float>(leftFftOut_[i][1]);   // Left imag
                 fftInputBuffer_[i * 4 + 2] = static_cast<float>(rightFftOut_[i][0]);  // Right real
@@ -261,14 +261,14 @@ private:
             int outputOffset = classIdx * 258;  // 258 = 129 real + 129 imag
             
             // Mix left and right channels for fake output (copy real parts)
-            for (size_t i = 0; i < FFT_SIZE; i++) {
+            for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
                 // Average left and right real parts
                 slModelOutputBuffer_[outputOffset + i] = static_cast<float>(
                     (leftFftOut_[i][0] + rightFftOut_[i][0]) * 0.5);
             }
             
             // Mix left and right channels for fake output (copy imaginary parts)
-            for (size_t i = 0; i < FFT_SIZE; i++) {
+            for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
                 // Average left and right imaginary parts
                 slModelOutputBuffer_[outputOffset + 129 + i] = static_cast<float>(
                     (leftFftOut_[i][1] + rightFftOut_[i][1]) * 0.5);
@@ -301,7 +301,7 @@ private:
     
     void performIFFTForClass(int classIdx, const float* classOutput) {
         // Split real and imaginary parts (first 129 real, next 129 imaginary)
-        for (size_t i = 0; i < FFT_SIZE; i++) {
+        for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
             ifftIn_[i][0] = static_cast<double>(classOutput[i]);           // Real part
             ifftIn_[i][1] = static_cast<double>(classOutput[i + 129]);     // Imaginary part
         }
@@ -310,8 +310,8 @@ private:
         fftw_execute(ifftPlan_);
         
         // Store IFFT result in class-specific buffer (normalize by window size)
-        for (size_t i = 0; i < WINDOW_SIZE; i++) {
-            classIfftResult_[classIdx][i] = ifftOut_[i] / WINDOW_SIZE;
+        for (size_t i = 0; i < NFFT; i++) {
+            classIfftResult_[classIdx][i] = ifftOut_[i] / NFFT;
         }
     }
     
@@ -321,8 +321,8 @@ private:
 
         // Copy the last ISTFT_OUTPUT_SIZE frames to the class-specific context buffer
         double* ctxPtr = classIstftContextBuffers_[classIdx][classLookbackBufIdx_[classIdx]];
-        std::copy(classIfftResult_[classIdx] + (WINDOW_SIZE - ISTFT_OUTPUT_SIZE),
-                 classIfftResult_[classIdx] + WINDOW_SIZE,
+        std::copy(classIfftResult_[classIdx] + (NFFT - ISTFT_OUTPUT_SIZE),
+                 classIfftResult_[classIdx] + NFFT,
                  ctxPtr);
 
         // Do overlap-add for the current chunk using class-specific buffers
@@ -351,7 +351,7 @@ private:
     }
     
     void getWindowSamples() {
-        ringBuffer_.getWindowData(g_windowBuffer, WINDOW_SIZE * sizeof(float));
+        ringBuffer_.getWindowData(g_windowBuffer, NFFT * sizeof(float));
     }
 };
 

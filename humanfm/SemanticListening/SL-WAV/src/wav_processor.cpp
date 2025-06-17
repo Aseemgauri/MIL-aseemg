@@ -12,6 +12,9 @@
 #include "audio_config.h"
 #include "SL_Model.h"
 
+// Macro to control whether to use model inference or bypass it
+#define BYPASS_INFERENCE 0  // Set to 1 to bypass model, 0 to use model
+
 // Number of output classes (only hardcoded value allowed)
 #define NUM_CLASSES 5
 
@@ -57,7 +60,7 @@ static ModelDimensions g_modelDims;
 class WAVProcessor {
 public:
     // Constructor: Initializes the ring buffer and FFTW plans
-    WAVProcessor() : ringBuffer(CHUNK_SIZE * sizeof(float)) {
+    WAVProcessor() : ringBuffer(NFFT * sizeof(float)) {
         // Initialize windows if not already initialized
         static bool windowsInitialized = false;
         if (!windowsInitialized) {
@@ -66,15 +69,19 @@ public:
         }
         initializeFFTW();
         
+        // Initialize sliding buffers with zeros
+        memset(leftSlidingBuffer, 0, NFFT * sizeof(float));
+        memset(rightSlidingBuffer, 0, NFFT * sizeof(float));
+        
         // Initialize class-specific overlap-add state
         for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
             classLookbackBufIdx[classIdx] = 0;
             // Zero out all buffers for this class
             memset(classOutputChunks[classIdx], 0, CHUNK_SIZE * sizeof(float));
             memset(classCurrentBuffer[classIdx], 0, BUFFER_SIZE * sizeof(double));
-            memset(classIfftResult[classIdx], 0, WINDOW_SIZE * sizeof(double));
-            memset(classFftReal[classIdx], 0, FFT_SIZE * sizeof(double));
-            memset(classFftImag[classIdx], 0, FFT_SIZE * sizeof(double));
+            memset(classIfftResult[classIdx], 0, NFFT * sizeof(double));
+            memset(classFftReal[classIdx], 0, FFT_OUT_SIZE * sizeof(double));
+            memset(classFftImag[classIdx], 0, FFT_OUT_SIZE * sizeof(double));
             for (int bufIdx = 0; bufIdx < ISTFT_LOOKBACK_BUFFERS; bufIdx++) {
                 memset(classIstftContextBuffers[classIdx][bufIdx], 0, ISTFT_OUTPUT_SIZE * sizeof(double));
             }
@@ -335,10 +342,10 @@ private:
     // Initializes FFTW plans and buffers for forward and inverse FFT
     void initializeFFTW() {
         // Initialize FFT using static buffers
-        fftPlan = fftw_plan_dft_r2c_1d(WINDOW_SIZE, fftInBuffer, fftOutBuffer, FFTW_ESTIMATE);
+        fftPlan = fftw_plan_dft_r2c_1d(NFFT, fftInBuffer, fftOutBuffer, FFTW_ESTIMATE);
         
         // Initialize IFFT using static buffers
-        ifftPlan = fftw_plan_dft_c2r_1d(WINDOW_SIZE, ifftInBuffer, ifftOutBuffer, FFTW_ESTIMATE);
+        ifftPlan = fftw_plan_dft_c2r_1d(NFFT, ifftInBuffer, ifftOutBuffer, FFTW_ESTIMATE);
     }
 
     // Cleans up FFTW resources
@@ -509,45 +516,51 @@ private:
         std::cout << "[INPUT] Left: [" << leftMin << ", " << leftMax << "], Mean: " << (leftSum / CHUNK_SIZE)
                   << " | Right: [" << rightMin << ", " << rightMax << "], Mean: " << (rightSum / CHUNK_SIZE) << std::endl;
         
+        // Write new chunk data to the ring buffers
+        // Update sliding buffers: shift old data and add new chunk
+        // Shift existing data left by CHUNK_SIZE samples
+        for (size_t i = 0; i < NFFT - CHUNK_SIZE; i++) {
+            leftSlidingBuffer[i] = leftSlidingBuffer[i + CHUNK_SIZE];
+            rightSlidingBuffer[i] = rightSlidingBuffer[i + CHUNK_SIZE];
+        }
+        
+        // Add new chunk data to the end of the sliding buffers
+        for (size_t i = 0; i < CHUNK_SIZE; i++) {
+            leftSlidingBuffer[NFFT - CHUNK_SIZE + i] = leftChunkBuffer[i];
+            rightSlidingBuffer[NFFT - CHUNK_SIZE + i] = rightChunkBuffer[i];
+        }
+        
         return processChunk();
     }
 
     // Processes a single chunk of audio data through FFT and SL Model inference
     bool processChunk() {
-        // Process left channel FFT
-        // Apply analysis window to left channel
-        for (size_t i = 0; i < CHUNK_SIZE; i++) {
-            fftInBuffer[i] = static_cast<double>(leftChunkBuffer[i]) * g_analysisWindow[i];
-        }
-        // Zero-pad the rest of the window
-        for (size_t i = CHUNK_SIZE; i < WINDOW_SIZE; i++) {
-            fftInBuffer[i] = 0.0;
+        // Process left channel FFT using full sliding buffer
+        // Apply analysis window to the entire NFFT samples
+        for (size_t i = 0; i < NFFT; i++) {
+            fftInBuffer[i] = static_cast<double>(leftSlidingBuffer[i]) * g_analysisWindow[i];
         }
         
         // Perform FFT on left channel
         fftw_execute(fftPlan);
         
         // Store left channel FFT results
-        for (size_t i = 0; i < FFT_SIZE; i++) {
+        for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
             leftFftReal[i] = fftOutBuffer[i][0];  // Real part
             leftFftImag[i] = fftOutBuffer[i][1];  // Imaginary part
         }
         
-        // Process right channel FFT
-        // Apply analysis window to right channel
-        for (size_t i = 0; i < CHUNK_SIZE; i++) {
-            fftInBuffer[i] = static_cast<double>(rightChunkBuffer[i]) * g_analysisWindow[i];
-        }
-        // Zero-pad the rest of the window
-        for (size_t i = CHUNK_SIZE; i < WINDOW_SIZE; i++) {
-            fftInBuffer[i] = 0.0;
+        // Process right channel FFT using full sliding buffer
+        // Apply analysis window to the entire NFFT samples
+        for (size_t i = 0; i < NFFT; i++) {
+            fftInBuffer[i] = static_cast<double>(rightSlidingBuffer[i]) * g_analysisWindow[i];
         }
         
         // Perform FFT on right channel
         fftw_execute(fftPlan);
         
         // Store right channel FFT results
-        for (size_t i = 0; i < FFT_SIZE; i++) {
+        for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
             rightFftReal[i] = fftOutBuffer[i][0];  // Real part
             rightFftImag[i] = fftOutBuffer[i][1];  // Imaginary part
         }
@@ -557,7 +570,7 @@ private:
         double leftImagMin = leftFftImag[0], leftImagMax = leftFftImag[0];
         double rightRealMin = rightFftReal[0], rightRealMax = rightFftReal[0];
         double rightImagMin = rightFftImag[0], rightImagMax = rightFftImag[0];
-        for (size_t i = 0; i < FFT_SIZE; i++) {
+        for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
             leftRealMin = std::min(leftRealMin, leftFftReal[i]);
             leftRealMax = std::max(leftRealMax, leftFftReal[i]);
             leftImagMin = std::min(leftImagMin, leftFftImag[i]);
@@ -574,18 +587,32 @@ private:
 
         // Prepare FFT data for SL Model using static buffer with exact size
         // Format: Left_Real, Left_Imag, Right_Real, Right_Imag (interleaved per frequency bin)
-        for (size_t i = 0; i < FFT_SIZE; i++) {
+        for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
             fftDataBuffer[i * 4 + 0] = static_cast<float>(leftFftReal[i]);   // Left real
-            fftDataBuffer[i * 4 + 1] = static_cast<float>(leftFftImag[i]);   // Left imag
-            fftDataBuffer[i * 4 + 2] = static_cast<float>(rightFftReal[i]);  // Right real
+            fftDataBuffer[i * 4 + 1] = static_cast<float>(rightFftReal[i]);   // Right real
+            fftDataBuffer[i * 4 + 2] = static_cast<float>(leftFftImag[i]);  // Left imag
             fftDataBuffer[i * 4 + 3] = static_cast<float>(rightFftImag[i]);  // Right imag
         }
         
+#if BYPASS_INFERENCE
+        // Bypass model: copy FFT data directly to output buffer
+        // For each class, copy the FFT data as-is (identity transformation)
+        for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
+            float* classData = outputDataBuffer + classIdx * g_modelDims.class_output_size;
+            // Copy the FFT data directly (real and imaginary parts)
+            for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
+                classData[i] = fftDataBuffer[i * 4 + 0];  // Left real
+                classData[i + FFT_OUT_SIZE] = fftDataBuffer[i * 4 + 2];  // Left imag
+            }
+        }
+        std::cout << "[BYPASS] Model bypassed - FFT data copied directly to output" << std::endl;
+#else
         // Run SL Model inference synchronously (blocking)
         if (!runSLModelInference(fftDataBuffer)) {
             std::cerr << "Error: SL Model inference failed" << std::endl;
             return false;
         }
+#endif
 
         // Process SL Model outputs for each class immediately
         return processClassOutputs();
@@ -601,7 +628,7 @@ private:
             float* classData = outputDataBuffer + classIdx * g_modelDims.class_output_size;
             
             // Split real and imaginary parts into class-specific buffers (first 129 real, next 129 imaginary)
-            for (size_t i = 0; i < FFT_SIZE; i++) {
+            for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
                 classFftReal[classIdx][i] = static_cast<double>(classData[i]);           // Real part
                 classFftImag[classIdx][i] = static_cast<double>(classData[i + 129]);     // Imaginary part
             }
@@ -623,7 +650,7 @@ private:
     // Performs inverse FFT on the processed frequency domain data
     bool performIFFTForClass(int classIdx) {
         // Prepare for IFFT using class-specific FFT data
-        for (size_t i = 0; i < FFT_SIZE; i++) {
+        for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
             ifftInBuffer[i][0] = classFftReal[classIdx][i];  // Real part
             ifftInBuffer[i][1] = classFftImag[classIdx][i];  // Imaginary part
         }
@@ -632,21 +659,21 @@ private:
         fftw_execute(ifftPlan);
         
         // Store IFFT result in class-specific buffer (normalize by window size)
-        for (size_t i = 0; i < WINDOW_SIZE; i++) {
-            classIfftResult[classIdx][i] = ifftOutBuffer[i] / WINDOW_SIZE;
+        for (size_t i = 0; i < NFFT; i++) {
+            classIfftResult[classIdx][i] = ifftOutBuffer[i] / NFFT;
         }
         
         // Debug: Print IFFT result statistics
         double ifftMin = classIfftResult[classIdx][0], ifftMax = classIfftResult[classIdx][0];
         double ifftSum = 0.0;
-        for (size_t i = 0; i < WINDOW_SIZE; i++) {
+        for (size_t i = 0; i < NFFT; i++) {
             ifftMin = std::min(ifftMin, classIfftResult[classIdx][i]);
             ifftMax = std::max(ifftMax, classIfftResult[classIdx][i]);
             ifftSum += classIfftResult[classIdx][i];
         }
         std::cout << "[IFFT] Class " << classIdx 
                   << " Range: [" << ifftMin << ", " << ifftMax << "]"
-                  << ", Mean: " << (ifftSum / WINDOW_SIZE) << std::endl;
+                  << ", Mean: " << (ifftSum / NFFT) << std::endl;
 
         return true;
     }
@@ -658,7 +685,7 @@ private:
 
         // Copy the last ISTFT_OUTPUT_SIZE frames to the class-specific context buffer
         double* ctxPtr = classIstftContextBuffers[classIdx][classLookbackBufIdx[classIdx]];
-        memcpy(ctxPtr, classIfftResult[classIdx] + (WINDOW_SIZE - ISTFT_OUTPUT_SIZE), ISTFT_OUTPUT_SIZE * sizeof(double));
+        memcpy(ctxPtr, classIfftResult[classIdx] + (NFFT - ISTFT_OUTPUT_SIZE), ISTFT_OUTPUT_SIZE * sizeof(double));
 
         // Do overlap-add for the current chunk using class-specific buffers
         for (int j = 0; j < CHUNK_SIZE; j++) {
@@ -706,8 +733,8 @@ private:
         size_t bufferSize = bufferWrapper.size;
         size_t writePos = ringBuffer.getWritePosition();
         
-        for (size_t i = 0; i < WINDOW_SIZE * sizeof(float); i++) {
-            size_t pos = (writePos - WINDOW_SIZE * sizeof(float) + i + bufferSize) % bufferSize;
+        for (size_t i = 0; i < NFFT * sizeof(float); i++) {
+            size_t pos = (writePos - NFFT * sizeof(float) + i + bufferSize) % bufferSize;
             g_windowBuffer[i] = buffer[pos];
         }
     }
@@ -737,17 +764,21 @@ private:
     WAVHeader header;
     RingBuffer ringBuffer;
     
+    // Sliding buffers to maintain NFFT samples of audio data
+    float leftSlidingBuffer[NFFT];   // Left channel sliding buffer
+    float rightSlidingBuffer[NFFT];  // Right channel sliding buffer
+    
     // Output files for 5 classes
     std::ofstream outputFiles[NUM_CLASSES];
     
     // FFTW variables (static buffers instead of dynamic allocation)
-    double fftInBuffer[WINDOW_SIZE];
-    fftw_complex fftOutBuffer[FFT_SIZE];
+    double fftInBuffer[NFFT];
+    fftw_complex fftOutBuffer[FFT_OUT_SIZE];
     fftw_plan fftPlan;
     
     // IFFTW variables (static buffers instead of dynamic allocation)
-    fftw_complex ifftInBuffer[FFT_SIZE];
-    double ifftOutBuffer[WINDOW_SIZE];
+    fftw_complex ifftInBuffer[FFT_OUT_SIZE];
+    double ifftOutBuffer[NFFT];
     fftw_plan ifftPlan;
     
     // SL Model-related variables (using static storage instead of pointer)
@@ -762,17 +793,17 @@ private:
     int8_t classLookbackBufIdx[NUM_CLASSES];
     double classIstftContextBuffers[NUM_CLASSES][ISTFT_LOOKBACK_BUFFERS][ISTFT_OUTPUT_SIZE];
     double classCurrentBuffer[NUM_CLASSES][BUFFER_SIZE];
-    double classIfftResult[NUM_CLASSES][WINDOW_SIZE];
+    double classIfftResult[NUM_CLASSES][NFFT];
     
     // Class-specific FFTW buffers to avoid interference
-    double classFftReal[NUM_CLASSES][FFT_SIZE];
-    double classFftImag[NUM_CLASSES][FFT_SIZE];
+    double classFftReal[NUM_CLASSES][FFT_OUT_SIZE];
+    double classFftImag[NUM_CLASSES][FFT_OUT_SIZE];
     
     // Stereo FFT buffers
-    double leftFftReal[FFT_SIZE];
-    double leftFftImag[FFT_SIZE];
-    double rightFftReal[FFT_SIZE];
-    double rightFftImag[FFT_SIZE];
+    double leftFftReal[FFT_OUT_SIZE];
+    double leftFftImag[FFT_OUT_SIZE];
+    double rightFftReal[FFT_OUT_SIZE];
+    double rightFftImag[FFT_OUT_SIZE];
     
     // Static buffers sized exactly based on discovered model dimensions
     static const int MAX_MEMORY_POOL_SIZE = 65536;  // Large enough for any reasonable model

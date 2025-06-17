@@ -19,7 +19,7 @@ SL_Model::SL_Model(const std::string &model_path) : InferenceWrapper(model_path)
     
     std::cout << "SL Model initialized successfully" << std::endl;
     std::cout << "Number of classes: " << num_classes_ << std::endl;
-    std::cout << "FFT size: " << fft_size_ << std::endl;
+    std::cout << "FFT size: " << FFT_OUT_SIZE_ << std::endl;
     std::cout << "Input channels: " << input_channels_ << std::endl;
     std::cout << "State buffers: " << num_state_buffers_ << std::endl;
     std::cout << "Max name length: " << max_name_length_ << std::endl;
@@ -57,7 +57,7 @@ void SL_Model::initializeModelParams() {
     // Extract model parameters from shapes
     // mixture_tf shape: [batch, channels, time, freq] = [1, 4, 1, 129]
     input_channels_ = static_cast<int>(mixture_shape_[1]);
-    fft_size_ = static_cast<int>(mixture_shape_[3]);
+    FFT_OUT_SIZE_ = static_cast<int>(mixture_shape_[3]);
     
     // embedding shape: [batch, num_classes] = [1, 5]
     num_classes_ = static_cast<int>(embedding_shape_[1]);
@@ -140,17 +140,15 @@ void SL_Model::resetBuffers() {
 }
 
 bool SL_Model::processFrame(float* inputFFT, float* outputFFT) {
+    // inputFFT can be a 2D array float[4][FFT_OUT_SIZE] passed as &inputFFT[0][0]
     if (!inputFFT || !outputFFT) {
         std::cerr << "Error: Null input or output FFT data" << std::endl;
         return false;
     }
-    
     try {
         // Set mixture input
-        // Input FFT data is expected to be in the format [channels * freq]
-        // We need to reshape it to [1, channels, 1, freq]
-        std::memcpy(current_mixture_, inputFFT, 
-                   input_channels_ * fft_size_ * sizeof(float));
+        // Input FFT data is expected to be in the format [channels][freq] as a flat buffer
+        std::memcpy(current_mixture_, inputFFT, input_channels_ * FFT_OUT_SIZE_ * sizeof(float));
         set_input("mixture_tf", current_mixture_);
         
         // Set embedding to all ones (or zeros - depends on model expectation)
