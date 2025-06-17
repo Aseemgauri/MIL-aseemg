@@ -28,8 +28,8 @@ struct AudioFrame {
 
 // POD FFT data structure - no expensive constructor
 struct FFTData {
-    double real[FFT_SIZE];
-    double imag[FFT_SIZE];
+    double real[FFT_OUT_SIZE];
+    double imag[FFT_OUT_SIZE];
     
     // Initialize to zero (call explicitly when needed)
     void clear() {
@@ -39,7 +39,7 @@ struct FFTData {
     
     // Copy from FFTW output
     void copyFromFFTW(const fftw_complex* fftOut) {
-        for (size_t i = 0; i < FFT_SIZE; i++) {
+        for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
             real[i] = fftOut[i][0];  // Real part
             imag[i] = fftOut[i][1];  // Imaginary part
         }
@@ -66,11 +66,11 @@ struct ONNXOutput {
     void createFakeOutput(const FFTData& fftData) {
         for (int classIdx = 0; classIdx < 5; classIdx++) {
             // Copy real parts (first 129 elements)
-            for (size_t i = 0; i < FFT_SIZE; i++) {
+            for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
                 classData[classIdx][i] = static_cast<float>(fftData.real[i]);
             }
             // Copy imaginary parts (next 129 elements)
-            for (size_t i = 0; i < FFT_SIZE; i++) {
+            for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
                 classData[classIdx][i + 129] = static_cast<float>(fftData.imag[i]);
             }
         }

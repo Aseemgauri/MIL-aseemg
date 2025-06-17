@@ -288,6 +288,6 @@ public:
 
 // Type aliases for specific use cases
 using AudioIOBuffer = UnifiedRingBuffer<32768>;  // 32KB for audio I/O
-using SlidingWindowBuffer = UnifiedRingBuffer<WINDOW_SIZE * sizeof(float) * 8>;  // For sliding window
+using SlidingWindowBuffer = UnifiedRingBuffer<NFFT * sizeof(float) * 8>;  // For sliding window
 
 #endif // UNIFIED_RINGBUFFER_H 

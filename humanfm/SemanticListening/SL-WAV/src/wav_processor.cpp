@@ -585,34 +585,30 @@ private:
         std::cout << "[FFT] Right Real: [" << rightRealMin << ", " << rightRealMax << "]"
                   << ", Right Imag: [" << rightImagMin << ", " << rightImagMax << "]" << std::endl;
 
-        // Prepare FFT data for SL Model using static buffer with exact size
-        // Format: Left_Real, Left_Imag, Right_Real, Right_Imag (interleaved per frequency bin)
+        // Prepare FFT data for SL Model using 2D array: [channels][freq]
+        float fftDataBuffer[4][FFT_OUT_SIZE];
         for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
-            fftDataBuffer[i * 4 + 0] = static_cast<float>(leftFftReal[i]);   // Left real
-            fftDataBuffer[i * 4 + 1] = static_cast<float>(rightFftReal[i]);   // Right real
-            fftDataBuffer[i * 4 + 2] = static_cast<float>(leftFftImag[i]);  // Left imag
-            fftDataBuffer[i * 4 + 3] = static_cast<float>(rightFftImag[i]);  // Right imag
+            fftDataBuffer[0][i] = static_cast<float>(leftFftReal[i]);   // left real
+            fftDataBuffer[1][i] = static_cast<float>(rightFftReal[i]);  // right real
+            fftDataBuffer[2][i] = static_cast<float>(leftFftImag[i]);   // left imag
+            fftDataBuffer[3][i] = static_cast<float>(rightFftImag[i]);  // right imag
         }
-        
-#if BYPASS_INFERENCE
-        // Bypass model: copy FFT data directly to output buffer
-        // For each class, copy the FFT data as-is (identity transformation)
+        // Pass as flat buffer to model
+        #if BYPASS_INFERENCE
         for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
             float* classData = outputDataBuffer + classIdx * g_modelDims.class_output_size;
-            // Copy the FFT data directly (real and imaginary parts)
             for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
-                classData[i] = fftDataBuffer[i * 4 + 0];  // Left real
-                classData[i + FFT_OUT_SIZE] = fftDataBuffer[i * 4 + 2];  // Left imag
+                classData[i] = fftDataBuffer[0][i];  // Left real
+                classData[i + FFT_OUT_SIZE] = fftDataBuffer[2][i];  // Left imag
             }
         }
         std::cout << "[BYPASS] Model bypassed - FFT data copied directly to output" << std::endl;
-#else
-        // Run SL Model inference synchronously (blocking)
-        if (!runSLModelInference(fftDataBuffer)) {
+        #else
+        if (!runSLModelInference(&fftDataBuffer[0][0])) {
             std::cerr << "Error: SL Model inference failed" << std::endl;
             return false;
         }
-#endif
+        #endif
 
         // Process SL Model outputs for each class immediately
         return processClassOutputs();

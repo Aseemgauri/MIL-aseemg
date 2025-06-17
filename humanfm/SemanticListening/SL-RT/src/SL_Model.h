@@ -20,7 +20,7 @@ public:
     
     // Getters for model properties
     int getNumClasses() const { return num_classes_; }
-    int getFFTSize() const { return fft_size_; }
+    int getFFTSize() const { return FFT_OUT_SIZE_; }
     int getInputChannels() const { return input_channels_; }
     
     // Override infer to handle state buffer updates
@@ -29,7 +29,7 @@ public:
 private:
     // Model properties
     int num_classes_;
-    int fft_size_;
+    int FFT_OUT_SIZE_;
     int input_channels_;
     
     // Input/output shapes
