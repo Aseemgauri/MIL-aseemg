@@ -57,12 +57,16 @@ public:
         // Pre-allocate all processing buffers
         std::memset(fftInputBuffer_, 0, sizeof(fftInputBuffer_));
         std::memset(slModelOutputBuffer_, 0, sizeof(slModelOutputBuffer_));
+#if ENABLE_PASSTHROUGH
         std::memset(currentAudioFrame_, 0, sizeof(currentAudioFrame_));
+#endif
         std::memset(outputAudioFrame_, 0, sizeof(outputAudioFrame_));
         std::memset(leftChannelFrame_, 0, sizeof(leftChannelFrame_));
         std::memset(rightChannelFrame_, 0, sizeof(rightChannelFrame_));
         std::memset(leftFftOut_, 0, sizeof(leftFftOut_));
         std::memset(rightFftOut_, 0, sizeof(rightFftOut_));
+        std::memset(leftInputRollingBuffer_, 0, sizeof(leftInputRollingBuffer_));
+        std::memset(rightInputRollingBuffer_, 0, sizeof(rightInputRollingBuffer_));
     }
 
     ~RealtimeProcessor() {
@@ -97,12 +101,19 @@ public:
             rightChannelFrame_[i] = stereoInput[i + samplesToProcess];  // Right channel samples follow
         }
         
+        // Update rolling buffers for both channels
+        std::memmove(leftInputRollingBuffer_, leftInputRollingBuffer_ + CHUNK_SIZE, sizeof(float) * (NFFT - CHUNK_SIZE));
+        std::memcpy(leftInputRollingBuffer_ + (NFFT - CHUNK_SIZE), leftChannelFrame_, sizeof(float) * CHUNK_SIZE);
+        std::memmove(rightInputRollingBuffer_, rightInputRollingBuffer_ + CHUNK_SIZE, sizeof(float) * (NFFT - CHUNK_SIZE));
+        std::memcpy(rightInputRollingBuffer_ + (NFFT - CHUNK_SIZE), rightChannelFrame_, sizeof(float) * CHUNK_SIZE);
+        
+        
+        
+#if ENABLE_PASSTHROUGH
         // For passthrough mode, mix stereo to mono for output compatibility
         for (size_t i = 0; i < samplesToProcess; i++) {
             currentAudioFrame_[i] = (leftChannelFrame_[i] + rightChannelFrame_[i]) * 0.5f;
         }
-        
-#if ENABLE_PASSTHROUGH
         // In passthrough mode, directly copy input to output
         std::copy(currentAudioFrame_, currentAudioFrame_ + samplesToProcess, monoOutput);
 #else
@@ -139,7 +150,7 @@ private:
     float classWeights_[NUM_CLASSES];
     
     // Pre-allocated processing buffers (no dynamic allocation during processing)
-    float fftInputBuffer_[4 * 129];  // 4 channels * 129 frequency bins for SL_Model input
+    float fftInputBuffer_[4][FFT_OUT_SIZE];  // [0]=left real, [1]=right real, [2]=left imag, [3]=right imag
     float slModelOutputBuffer_[NUM_CLASSES * 258];  // NUM_CLASSES classes * 258 frequency bins for SL_Model output
     float currentAudioFrame_[CHUNK_SIZE];  // Current input audio frame
     float outputAudioFrame_[CHUNK_SIZE];   // Current output audio frame
@@ -151,6 +162,9 @@ private:
     // Stereo FFT buffers
     fftw_complex leftFftOut_[FFT_OUT_SIZE];
     fftw_complex rightFftOut_[FFT_OUT_SIZE];
+    
+    float leftInputRollingBuffer_[NFFT];
+    float rightInputRollingBuffer_[NFFT];
     
     void initializeFFTW() {
         // Initialize FFT
@@ -176,15 +190,11 @@ private:
     // Single-threaded processing pipeline
     void processAudioFrame() {
         // Process left channel FFT
-        // Apply analysis window to left channel
-        for (size_t i = 0; i < CHUNK_SIZE; i++) {
-            fftIn_[i] = static_cast<double>(leftChannelFrame_[i]) * g_analysisWindow[i];
+        // Apply analysis window to left channel using rolling buffer
+        for (size_t i = 0; i < NFFT; i++) {
+            fftIn_[i] = static_cast<double>(leftInputRollingBuffer_[i]) * g_analysisWindow[i];
         }
-        // Zero-pad the rest of the window
-        for (size_t i = CHUNK_SIZE; i < NFFT; i++) {
-            fftIn_[i] = 0.0;
-        }
-        
+        // Remove zero-padding loop for left channel
         // Perform FFT on left channel
         fftw_execute(fftPlan_);
         
@@ -195,15 +205,11 @@ private:
         }
         
         // Process right channel FFT
-        // Apply analysis window to right channel
-        for (size_t i = 0; i < CHUNK_SIZE; i++) {
-            fftIn_[i] = static_cast<double>(rightChannelFrame_[i]) * g_analysisWindow[i];
+        // Apply analysis window to right channel using rolling buffer
+        for (size_t i = 0; i < NFFT; i++) {
+            fftIn_[i] = static_cast<double>(rightInputRollingBuffer_[i]) * g_analysisWindow[i];
         }
-        // Zero-pad the rest of the window
-        for (size_t i = CHUNK_SIZE; i < NFFT; i++) {
-            fftIn_[i] = 0.0;
-        }
-        
+        // Remove zero-padding loop for right channel
         // Perform FFT on right channel
         fftw_execute(fftPlan_);
         
@@ -233,16 +239,16 @@ private:
     bool runSLModelInference() {
         try {
             // Prepare FFT data for SL_Model with true stereo data
-            // Format: Left_Real, Left_Imag, Right_Real, Right_Imag (interleaved per frequency bin)
+            // Format: fftInputBuffer_[0]=left real, [1]=right real, [2]=left imag, [3]=right imag
             for (size_t i = 0; i < FFT_OUT_SIZE; i++) {
-                fftInputBuffer_[i * 4 + 0] = static_cast<float>(leftFftOut_[i][0]);   // Left real
-                fftInputBuffer_[i * 4 + 1] = static_cast<float>(leftFftOut_[i][1]);   // Left imag
-                fftInputBuffer_[i * 4 + 2] = static_cast<float>(rightFftOut_[i][0]);  // Right real
-                fftInputBuffer_[i * 4 + 3] = static_cast<float>(rightFftOut_[i][1]);  // Right imag
+                fftInputBuffer_[0][i] = static_cast<float>(leftFftOut_[i][0]); // left real
+                fftInputBuffer_[1][i] = static_cast<float>(rightFftOut_[i][0]); // right real
+                fftInputBuffer_[2][i] = static_cast<float>(leftFftOut_[i][1]); // left imag
+                fftInputBuffer_[3][i] = static_cast<float>(rightFftOut_[i][1]); // right imag
             }
             
-            // Use SL_Model's processFrame method with pre-allocated buffers
-            if (!slModel_->processFrame(fftInputBuffer_, slModelOutputBuffer_)) {
+            // Use SL_Model's processFrame method with pre-allocated buffers (flattened pointer)
+            if (!slModel_->processFrame(reinterpret_cast<float*>(fftInputBuffer_), slModelOutputBuffer_)) {
                 std::cerr << "Error in SL_Model processFrame" << std::endl;
                 return false;
             }

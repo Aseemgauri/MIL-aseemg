@@ -7,21 +7,30 @@ LIBS = -ljack -lfftw3 -lonnxruntime -lpthread
 SRCDIR = src
 OBJDIR = obj
 
-# Source files (in src directory)
-SOURCES = realtime_processor.cpp audio_manager.cpp static_buffers.cpp SL_Model.cpp InferenceWrapper.cpp
-# Object files (in obj directory)
-OBJECTS = $(SOURCES:%.cpp=$(OBJDIR)/%.o)
+# Source files for main program (in src directory)
+MAIN_SOURCES = realtime_processor.cpp audio_manager.cpp static_buffers.cpp SL_Model.cpp InferenceWrapper.cpp
+MAIN_OBJECTS = $(MAIN_SOURCES:%.cpp=$(OBJDIR)/%.o)
 
-TARGET = realtime_processor
+# Source files for runtime test (in src directory)
+TEST_SOURCES = runtime_test.cpp SL_Model.cpp InferenceWrapper.cpp
+TEST_OBJECTS = $(TEST_SOURCES:%.cpp=$(OBJDIR)/%.o)
+
+# Target executables
+MAIN_TARGET = realtime_processor
+TEST_TARGET = runtime_test
 
 # Header dependencies (in src directory)
 HEADERS = $(SRCDIR)/audio_manager.h $(SRCDIR)/audio_config.h $(SRCDIR)/static_buffers.h $(SRCDIR)/unified_ringbuffer.h $(SRCDIR)/audio_data_structures.h $(SRCDIR)/SL_Model.h $(SRCDIR)/InferenceWrapper.h
 
 # Default target
-all: $(TARGET)
+all: $(MAIN_TARGET) $(TEST_TARGET)
 
 # Build the main executable
-$(TARGET): $(OBJECTS)
+$(MAIN_TARGET): $(MAIN_OBJECTS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
+
+# Build the runtime test executable
+$(TEST_TARGET): $(TEST_OBJECTS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
 
 # Build object files in obj directory
@@ -34,7 +43,7 @@ $(OBJDIR):
 
 # Clean build artifacts
 clean:
-	rm -rf $(OBJDIR) $(TARGET)
+	rm -rf $(OBJDIR) $(MAIN_TARGET) $(TEST_TARGET)
 
 # Install dependencies (Ubuntu/Debian)
 install-deps:

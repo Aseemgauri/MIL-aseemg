@@ -28,11 +28,12 @@ double* getIstftContextBuffer(int8_t lookbackIdx) {
 
 // Initialize windows with perfect reconstruction
 void initializeWindows() {
-    const double PI = 3.14159265358979323846;
+    //const double PI = 3.14159265358979323846;
     
     // Compute Hanning window for analysis
     for (int i = 0; i < NFFT; i++) {
-        g_analysisWindow[i] = 0.5 * (1.0 - cos(2.0 * PI * i / (NFFT - 1)));
+        //g_analysisWindow[i] = 0.5 * (1.0 - cos(2.0 * PI * i / (NFFT - 1)));
+        g_analysisWindow[i] = 1.0;
     }
     
     // Compute perfect synthesis window
