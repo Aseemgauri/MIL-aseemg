@@ -66,12 +66,18 @@ bool test_runtime(const std::string &model_path) {
         float* input_fft = new float[input_size];
         float* output_fft = new float[num_classes * fft_size * 2]; // *2 for complex data
         
+        // Prepare embedding data (all ones for testing)
+        float* embedding = new float[num_classes];
+        for (int i = 0; i < num_classes; i++) {
+            embedding[i] = 1.0f;
+        }
+        
         // Reset model state
         model.resetBuffers();
         
         // Warm up run with initial realistic FFT data
         generateRealisticFFTData(input_fft, input_channels, fft_size);
-        model.processFrame(input_fft, output_fft);
+        model.processFrame(input_fft, output_fft, embedding);
         
         const int RUNS = 10000;
         float times[RUNS];
@@ -84,7 +90,7 @@ bool test_runtime(const std::string &model_path) {
             generateRealisticFFTData(input_fft, input_channels, fft_size);
             
             start = high_resolution_clock::now();
-            bool success = model.processFrame(input_fft, output_fft);
+            bool success = model.processFrame(input_fft, output_fft, embedding);
             stop = high_resolution_clock::now();
             
             if (!success) {
@@ -163,6 +169,7 @@ bool test_runtime(const std::string &model_path) {
         // Cleanup
         delete[] input_fft;
         delete[] output_fft;
+        delete[] embedding;
         
         return true;
         

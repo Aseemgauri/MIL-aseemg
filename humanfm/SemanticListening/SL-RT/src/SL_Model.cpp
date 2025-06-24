@@ -77,9 +77,9 @@ void SL_Model::resetBuffers() {
     clear_input("embedding");
 }
 
-bool SL_Model::processFrame(float* inputFFT, float* outputFFT) {
-    if (!inputFFT || !outputFFT) {
-        std::cerr << "Error: Null input or output FFT data" << std::endl;
+bool SL_Model::processFrame(float* inputFFT, float* outputFFT, const float* embedding) {
+    if (!inputFFT || !outputFFT || !embedding) {
+        std::cerr << "Error: Null input, output FFT data, or embedding" << std::endl;
         return false;
     }
     
@@ -91,9 +91,8 @@ bool SL_Model::processFrame(float* inputFFT, float* outputFFT) {
                    input_channels_ * FFT_OUT_SIZE_ * sizeof(float));
         set_input("mixture_tf", current_mixture_);
         
-        // Set embedding to all ones (or zeros - depends on model expectation)
-        // For multi-class output, we typically use all ones or a specific pattern
-        std::fill(current_embedding_, current_embedding_ + num_classes_, 1.0f);
+        // Set embedding from parameter
+        std::memcpy(current_embedding_, embedding, num_classes_ * sizeof(float));
         set_input("embedding", current_embedding_);
         
         // Run inference

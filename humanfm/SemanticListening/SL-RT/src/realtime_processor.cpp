@@ -2,12 +2,15 @@
 #include <cstring>
 #include <algorithm>
 #include <fftw3.h>
+#include <thread>
+#include <chrono>
 #include "audio_manager.h"
 #include "audio_config.h"
 #include "static_buffers.h"
-#include "unified_ringbuffer.h"
-#include "audio_data_structures.h"
 #include "SL_Model.h"
+#if !FILL_EMBEDDING
+#include "humanfm_client.hpp"
+#endif
 
 // Configuration macros
 #define NUM_CLASSES 5  // Number of output classes from the model
@@ -21,10 +24,18 @@
 // Set to 1 to enable SL_Model inference, 0 to bypass inference but keep FFT processing
 #define ENABLE_INFERENCE 1
 
+// Fill embedding test mode: when enabled, bypasses HumanFM server communication and sets
+// all embedding values to 1.0 and all class weights to 1.0 for testing
+// Set to 1 to enable test mode, 0 to use normal HumanFM server communication
+#define FILL_EMBEDDING 0
+
 class RealtimeProcessor {
 public:
-    RealtimeProcessor() : 
-        ringBuffer_() {
+    RealtimeProcessor() 
+#if !FILL_EMBEDDING
+        : humanfmClient_()
+#endif
+    {
         
         // Initialize windows if not already initialized
         static bool windowsInitialized = false;
@@ -37,7 +48,6 @@ public:
         // Initialize class-specific overlap-add state
         for (int classIdx = 0; classIdx < NUM_CLASSES; classIdx++) {
             classLookbackBufIdx_[classIdx] = 0;
-            std::memset(classCurrentBuffer_[classIdx], 0, BUFFER_SIZE * sizeof(double));
             std::memset(classIfftResult_[classIdx], 0, NFFT * sizeof(double));
             for (int bufIdx = 0; bufIdx < ISTFT_LOOKBACK_BUFFERS; bufIdx++) {
                 std::memset(classIstftContextBuffers_[classIdx][bufIdx], 0, 
@@ -53,6 +63,23 @@ public:
             classWeights_[i] = 1.0f / NUM_CLASSES; // Average weights when inference is disabled
 #endif
         }
+        
+        // Initialize embedding to all ones (default semantic embedding)
+        for (int i = 0; i < NUM_CLASSES; i++) {
+            embeddingBuffer_[i] = 1.0f;  // Default fallback value
+        }
+        
+#if FILL_EMBEDDING
+        // Test mode: Set all embedding and weights to 1.0 and skip background thread
+        for (int i = 0; i < NUM_CLASSES; i++) {
+            embeddingBuffer_[i] = 1.0f;
+            classWeights_[i] = 1.0f;
+        }
+        std::cout << "[FILL_EMBEDDING] Test mode active - all embeddings and weights set to 1.0" << std::endl;
+#else
+        // Start the background thread to update from HumanFM server
+        updateThread_ = std::thread(&RealtimeProcessor::updateFromServer, this);
+#endif
         
         // Pre-allocate all processing buffers
         std::memset(fftInputBuffer_, 0, sizeof(fftInputBuffer_));
@@ -70,6 +97,12 @@ public:
     }
 
     ~RealtimeProcessor() {
+#if !FILL_EMBEDDING
+        stopUpdateThread_ = true;
+        if (updateThread_.joinable()) {
+            updateThread_.join();
+        }
+#endif
         cleanupFFTW();
     }
 
@@ -83,6 +116,20 @@ public:
         } catch (const std::exception& e) {
             std::cerr << "[RealtimeProcessor] Error initializing SL Model: " << e.what() << std::endl;
             return false;
+        }
+    }
+    
+    // Method to set embedding values for semantic processing
+    void setEmbedding(const float* embedding) {
+        if (embedding) {
+            std::memcpy(embeddingBuffer_, embedding, NUM_CLASSES * sizeof(float));
+        }
+    }
+    
+    // Method to set embedding for a specific class
+    void setClassEmbedding(int classIndex, float value) {
+        if (classIndex >= 0 && classIndex < NUM_CLASSES) {
+            embeddingBuffer_[classIndex] = value;
         }
     }
     
@@ -126,9 +173,6 @@ public:
     }
 
 private:
-    // Ring buffer for sliding window
-    SlidingWindowBuffer ringBuffer_;
-    
     // FFTW variables
     double* fftIn_;
     fftw_complex* fftOut_;
@@ -143,15 +187,17 @@ private:
     // Class-specific overlap-add state buffers
     int8_t classLookbackBufIdx_[NUM_CLASSES];
     double classIstftContextBuffers_[NUM_CLASSES][ISTFT_LOOKBACK_BUFFERS][ISTFT_OUTPUT_SIZE];
-    double classCurrentBuffer_[NUM_CLASSES][BUFFER_SIZE];
     double classIfftResult_[NUM_CLASSES][NFFT];
      
     // Weighted sum coefficients (pre-allocated)
     float classWeights_[NUM_CLASSES];
     
+    // Embedding buffer for SL_Model input
+    float embeddingBuffer_[NUM_CLASSES];
+    
     // Pre-allocated processing buffers (no dynamic allocation during processing)
     float fftInputBuffer_[4][FFT_OUT_SIZE];  // [0]=left real, [1]=right real, [2]=left imag, [3]=right imag
-    float slModelOutputBuffer_[NUM_CLASSES * 258];  // NUM_CLASSES classes * 258 frequency bins for SL_Model output
+    float slModelOutputBuffer_[NUM_CLASSES * FFT_OUT_SIZE * 2];  // NUM_CLASSES classes * 258 frequency bins for SL_Model output
     float currentAudioFrame_[CHUNK_SIZE];  // Current input audio frame
     float outputAudioFrame_[CHUNK_SIZE];   // Current output audio frame
     
@@ -165,6 +211,13 @@ private:
     
     float leftInputRollingBuffer_[NFFT];
     float rightInputRollingBuffer_[NFFT];
+    
+    // HumanFM client (only when not in test mode)
+#if !FILL_EMBEDDING
+    HumanFMClient humanfmClient_;
+    std::thread updateThread_;
+    bool stopUpdateThread_ = false;
+#endif
     
     void initializeFFTW() {
         // Initialize FFT
@@ -248,7 +301,8 @@ private:
             }
             
             // Use SL_Model's processFrame method with pre-allocated buffers (flattened pointer)
-            if (!slModel_->processFrame(reinterpret_cast<float*>(fftInputBuffer_), slModelOutputBuffer_)) {
+            // The embeddingBuffer_ is continuously updated by the background thread
+            if (!slModel_->processFrame(reinterpret_cast<float*>(fftInputBuffer_), slModelOutputBuffer_, embeddingBuffer_)) {
                 std::cerr << "Error in SL_Model processFrame" << std::endl;
                 return false;
             }
@@ -322,9 +376,6 @@ private:
     }
     
     void performOverlapAddForClass(int classIdx, float* outputChunk) {
-        // Store the current IFFT result in the class-specific current buffer
-        std::copy(classIfftResult_[classIdx], classIfftResult_[classIdx] + BUFFER_SIZE, classCurrentBuffer_[classIdx]);
-
         // Copy the last ISTFT_OUTPUT_SIZE frames to the class-specific context buffer
         double* ctxPtr = classIstftContextBuffers_[classIdx][classLookbackBufIdx_[classIdx]];
         std::copy(classIfftResult_[classIdx] + (NFFT - ISTFT_OUTPUT_SIZE),
@@ -355,10 +406,55 @@ private:
         // Advance the class-specific lookback buffer index
         classLookbackBufIdx_[classIdx] = (classLookbackBufIdx_[classIdx] + 1) % ISTFT_LOOKBACK_BUFFERS;
     }
-    
-    void getWindowSamples() {
-        ringBuffer_.getWindowData(g_windowBuffer, NFFT * sizeof(float));
+
+
+#if !FILL_EMBEDDING
+    void updateFromServer() {
+        std::cout << "[HumanFM] Background update thread started" << std::endl;
+        
+        while (!stopUpdateThread_) {
+            try {
+                // Get class levels (volume/weights) from server
+                auto classLevels = humanfmClient_.getClassLevels();
+                if (classLevels.size() == NUM_CLASSES) {
+                    for (int i = 0; i < NUM_CLASSES; i++) {
+                        // Convert level (0-100) to weight (0.0-1.0)
+                        classWeights_[i] = classLevels[i] / 100.0f;
+                    }
+                    std::cout << "[HumanFM] Updated class weights: ";
+                    for (int i = 0; i < NUM_CLASSES; i++) {
+                        std::cout << classWeights_[i] << " ";
+                    }
+                    std::cout << std::endl;
+                }
+                
+                // Get class detection status (embedding) from server
+                auto classDetections = humanfmClient_.getClasses();
+                if (classDetections.size() == NUM_CLASSES) {
+                    for (int i = 0; i < NUM_CLASSES; i++) {
+                        // Convert detection (0 or 1) to embedding value
+                        embeddingBuffer_[i] = static_cast<float>(classDetections[i]);
+                    }
+                    std::cout << "[HumanFM] Updated embedding: ";
+                    for (int i = 0; i < NUM_CLASSES; i++) {
+                        std::cout << embeddingBuffer_[i] << " ";
+                    }
+                    std::cout << std::endl;
+                }
+                
+            } catch (const std::exception& e) {
+                std::cerr << "[HumanFM] Error updating from server: " << e.what() << std::endl;
+            }
+            
+            // Update every 2 seconds to stay in sync with server data
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+        
+        std::cout << "[HumanFM] Background update thread stopped" << std::endl;
     }
+#endif
+
+
 };
 
 // Main function for real-time processing
@@ -398,6 +494,16 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "Real-time audio processing started. Press Ctrl+C to stop." << std::endl;
+#if FILL_EMBEDDING
+    std::cout << "[FILL_EMBEDDING] Test mode - all weights and embeddings fixed at 1.0" << std::endl;
+#else
+    std::cout << "[HumanFM] Integration enabled - updating weights and embedding from server every 2 seconds" << std::endl;
+#endif
+#if !FILL_EMBEDDING
+    std::cout << "[HumanFM] Target classes: Speech, Music, Vehicle, Animal, Dog" << std::endl;
+#else
+    std::cout << "[FILL_EMBEDDING] Target classes: Speech, Music, Vehicle, Animal, Dog (all set to 1.0)" << std::endl;
+#endif
 
     // Main processing loop - single-threaded audio processing
     try {

@@ -2,29 +2,9 @@
 #include <cmath>
 #include <stdexcept>
 
-// Define static buffers
-double g_previousBuffer[BUFFER_SIZE] = {0};
-double g_currentBuffer[BUFFER_SIZE] = {0};
-double g_synthesisBuffer[NFFT] = {0};
-double g_fftReal[FFT_OUT_SIZE] = {0};
-double g_fftImag[FFT_OUT_SIZE] = {0};
-double g_ifftResult[NFFT] = {0};
-char g_windowBuffer[NFFT * sizeof(float)] = {0};
-char g_chunkBuffer[CHUNK_SIZE * sizeof(float)] = {0};
-
-// Define window buffers
+// Define window buffers (only ones actually used in SL-RT)
 double g_analysisWindow[NFFT] = {0};
 double g_synthesisWindow[ISTFT_OUTPUT_SIZE] = {0};
-
-// ISTFT context buffers
-double g_istftContextBuffers[ISTFT_LOOKBACK_BUFFERS * ISTFT_OUTPUT_SIZE] = {0};
-uint8_t g_lookbackBufIdx = 0;
-
-// Get ISTFT context buffer for a specific lookback index
-double* getIstftContextBuffer(int8_t lookbackIdx) {
-    lookbackIdx = (ISTFT_LOOKBACK_BUFFERS + lookbackIdx) % ISTFT_LOOKBACK_BUFFERS;
-    return &g_istftContextBuffers[lookbackIdx * ISTFT_OUTPUT_SIZE];
-}
 
 // Initialize windows with perfect reconstruction
 void initializeWindows() {

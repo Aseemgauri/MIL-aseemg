@@ -11,7 +11,6 @@ extern double g_synthesisBuffer[NFFT];
 extern double g_fftReal[FFT_OUT_SIZE];
 extern double g_fftImag[FFT_OUT_SIZE];
 extern double g_ifftResult[NFFT];
-extern char g_windowBuffer[NFFT * sizeof(float)];
 extern char g_chunkBuffer[CHUNK_SIZE * sizeof(float)];
 
 // Window buffer declarations

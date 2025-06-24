@@ -1,14 +1,14 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -O2 -Wall -Wextra -Isrc
 INCLUDES = -I/usr/include/onnxruntime -I/usr/include/onnxruntime/core/session
-LIBS = -ljack -lfftw3 -lonnxruntime -lpthread
+LIBS = -ljack -lfftw3 -lonnxruntime -lpthread -ljsoncpp
 
 # Source and object directories
 SRCDIR = src
 OBJDIR = obj
 
 # Source files for main program (in src directory)
-MAIN_SOURCES = realtime_processor.cpp audio_manager.cpp static_buffers.cpp SL_Model.cpp InferenceWrapper.cpp
+MAIN_SOURCES = realtime_processor.cpp audio_manager.cpp static_buffers.cpp SL_Model.cpp InferenceWrapper.cpp humanfm_client.cpp
 MAIN_OBJECTS = $(MAIN_SOURCES:%.cpp=$(OBJDIR)/%.o)
 
 # Source files for runtime test (in src directory)
@@ -20,7 +20,7 @@ MAIN_TARGET = realtime_processor
 TEST_TARGET = runtime_test
 
 # Header dependencies (in src directory)
-HEADERS = $(SRCDIR)/audio_manager.h $(SRCDIR)/audio_config.h $(SRCDIR)/static_buffers.h $(SRCDIR)/unified_ringbuffer.h $(SRCDIR)/audio_data_structures.h $(SRCDIR)/SL_Model.h $(SRCDIR)/InferenceWrapper.h
+HEADERS = $(SRCDIR)/audio_manager.h $(SRCDIR)/audio_config.h $(SRCDIR)/static_buffers.h $(SRCDIR)/unified_ringbuffer.h $(SRCDIR)/audio_data_structures.h $(SRCDIR)/SL_Model.h $(SRCDIR)/InferenceWrapper.h $(SRCDIR)/humanfm_client.hpp
 
 # Default target
 all: $(MAIN_TARGET) $(TEST_TARGET)

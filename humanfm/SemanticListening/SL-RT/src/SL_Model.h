@@ -12,7 +12,7 @@ public:
     ~SL_Model();
     
     // Main processing function
-    bool processFrame(float* inputFFT, float* outputFFT);
+    bool processFrame(float* inputFFT, float* outputFFT, const float* embedding);
     
     // Buffer management
     void resetBuffers();

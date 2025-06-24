@@ -1,0 +1,6 @@
+{
+    "cmake.sourceDirectory": "/home/orangepi/Documents/MIL-aseemg/humanfm/SemanticListening/SL-RT",
+    "files.associations": {
+        "iomanip": "cpp"
+    }
+}

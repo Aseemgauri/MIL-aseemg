@@ -1,0 +1,84 @@
+body{
+  margin: 15px;
+  background-color: #cceec8;
+}
+
+main, #class-wrapper, #header-ctnr, #class-ctnr {
+  display: flex;
+}
+
+main, #class-ctnr {
+  align-items: center;
+}
+
+main, #class-ctnr {
+  flex-direction: column;
+}
+
+#header-ctnr {
+  justify-content: center;
+}
+
+#header-ctnr img {
+  width: 50px;
+  height: 50px;
+  margin: 10px;
+}
+
+h1 {
+  font-family: "The Girl Next Door", serif;
+}
+
+h2 {
+  font-family: "Acme", serif;
+  font-size: 1.5vw;
+  text-align: center;
+}
+
+section > h2 {
+  margin: 20px;
+  margin-left: 250px;
+  margin-right: 250px;
+}
+
+main > h2 {
+  border-bottom: 3px solid black;
+}
+
+#setting-btns button:hover, #class-ctnr {
+  background-color: #7da778;
+}
+
+#setting-btns button:hover {
+  transition: 0.3s ease-in;
+}
+
+.selected {
+  background-color: #ffac93;
+}
+
+/* Style for active (detected) classes */
+.active {
+  background-color: #4CAF50 !important;
+  color: white !important;
+  font-weight: bold;
+}
+
+#class-ctnr {
+  width: 70vw;
+  min-height: 100px;
+  max-height: none;
+  overflow: hidden;
+  transition: height 0.3s ease-in-out;
+  border-radius: 10px;
+}
+
+#class-ctnr button {
+  display: inline-block;
+}
+
+section button {
+  width: 100px;
+  height: 30px;
+  margin: 5px;
+}
