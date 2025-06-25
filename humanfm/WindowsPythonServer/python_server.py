@@ -16,7 +16,7 @@ from mdl_model import MdlModel
 # Configuration
 USE_BROADCAST = True  # Set to True for broadcast, False for multicast
 DEMO_MODE = False  # Set to True for demo mode, False for real classification
-DEMO_CLASS = "Speech"  # The class to constantly show as detected in demo mode
+DEMO_CLASS = "Baby cry"  # The class to constantly show as detected in demo mode
 CLASS_THRESHOLD = 0.4  # Threshold for determining if a class is active (0.0 to 1.0)
 
 # Orange Pi Node.js server configuration
@@ -166,11 +166,11 @@ def send_class_to_node(top_5_results):
         print(f"🎭 DEMO MODE: Sending {DEMO_CLASS} as detected")
         payload = {
             "classifications": [
-                {"label": DEMO_CLASS, "score": 1.0},
-                {"label": "Music", "score": 0.0},
-                {"label": "Vehicle", "score": 0.0},
-                {"label": "Animal", "score": 0.0},
-                {"label": "Dog", "score": 0.0}
+                {"label": "Baby cry", "score": 1.0},
+                {"label": "Cat", "score": 0.0},
+                {"label": "Rooster", "score": 0.0},
+                {"label": "Crickets", "score": 0.0},
+                {"label": DEMO_CLASS, "score": 0.0}
             ]
         }
     else:

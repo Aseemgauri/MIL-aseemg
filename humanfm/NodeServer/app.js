@@ -26,7 +26,7 @@ let latestClassifications = [];
 let lastClassificationTime = null;
 
 // Define the 5 specific classes we care about (must match database)
-const TARGET_CLASSES = ["Speech", "Music", "Vehicle", "Animal", "Dog"];
+const TARGET_CLASSES = ["Baby crying", "Cat", "Rooster", "Cricket", "Dog"];
 
 console.log("Setting up Express middleware...");
 

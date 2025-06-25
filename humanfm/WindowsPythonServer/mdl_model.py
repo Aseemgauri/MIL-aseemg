@@ -3,6 +3,7 @@ import torch
 import torchaudio
 from inference_wrapper import InferenceWrapper
 import os
+import csv
 
 class MdlModel:
     """
@@ -28,15 +29,17 @@ class MdlModel:
         self.labels = self._load_labels(label_csv)
         
         # Define the 5 target classes we care about (must match Node.js server)
-        self.target_classes = ["Speech", "Music", "Vehicle", "Animal", "Dog"]
+        self.target_classes = ["Baby cry", "Cat", "Rooster", "Cricket", "Dog"]
         
         # Debug: Check which target classes are found in the loaded labels
         print(f"[DEBUG] Loaded {len(self.labels)} labels from CSV")
+        print(f"[DEBUG] Labels around index 99: {self.labels[97:102] if len(self.labels) > 102 else 'Not enough labels'}")
         print("[DEBUG] Target class availability:")
         for target_class in self.target_classes:
-            if target_class in self.labels:
-                class_index = self.labels.index(target_class)
-                print(f"  {target_class}: Found at index {class_index}")
+            class_index = self._find_class_index(target_class)
+            if class_index != -1:
+                actual_label = self.labels[class_index]
+                print(f"  {target_class} → '{actual_label}' (index {class_index})")
             else:
                 print(f"  {target_class}: NOT FOUND!")
         print(f"[DEBUG] First 10 labels: {self.labels[:10]}")
@@ -45,16 +48,40 @@ class MdlModel:
 
     def _load_labels(self, label_csv):
         labels = []
-        with open(label_csv, "r") as f:
-            next(f)  # skip header
-            for line in f:
-                # Extract the display_name (3rd column) and strip quotes
-                label = line.strip().split(",")[2]
-                # Remove surrounding quotes if present
-                if label.startswith('"') and label.endswith('"'):
-                    label = label[1:-1]
+        name_to_index = {}  # For efficient lookup
+        
+        with open(label_csv, 'r') as f:
+            reader = csv.DictReader(f)
+            for i, row in enumerate(reader):
+                label = row['display_name']  # This properly handles quoted fields
                 labels.append(label)
+                name_to_index[label] = i  # Create reverse lookup
+        
+        # Store both for different use cases
+        self.name_to_index = name_to_index
         return labels
+
+    def _find_class_index(self, target_class):
+        """
+        Find class index using exact match first, then partial match.
+        Args:
+            target_class (str): The class name to find
+        Returns:
+            int: Class index, or -1 if not found
+        """
+        # First try exact match (O(1) lookup)
+        if target_class in self.name_to_index:
+            return self.name_to_index[target_class]
+        
+        # If exact match fails, try partial match (O(n) fallback)
+        target_lower = target_class.lower()
+        
+        for i, label in enumerate(self.labels):
+            label_lower = label.lower()
+            if target_lower in label_lower:
+                return i
+        
+        return -1  # Not found
 
     def extract_features(self, audio):
         """
@@ -119,11 +146,11 @@ class MdlModel:
             # Get scores for the 5 target classes only
             target_results = []
             for target_class in self.target_classes:
-                if target_class in self.labels:
-                    # Find the index of this target class in the full labels list
-                    class_index = self.labels.index(target_class)
+                class_index = self._find_class_index(target_class)
+                if class_index != -1:
                     score = output[class_index]
-                    print(f"[DEBUG] {target_class} (index {class_index}): {score:.4f}")
+                    actual_label = self.labels[class_index]
+                    print(f"[DEBUG] {target_class} → '{actual_label}' (index {class_index}): {score:.4f}")
                     target_results.append((target_class, score))
                 else:
                     # If target class not found in model labels, return 0 score
