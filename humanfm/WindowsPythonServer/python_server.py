@@ -17,7 +17,7 @@ from mdl_model import MdlModel
 USE_BROADCAST = True  # Set to True for broadcast, False for multicast
 DEMO_MODE = False  # Set to True for demo mode, False for real classification
 DEMO_CLASS = "Baby cry"  # The class to constantly show as detected in demo mode
-CLASS_THRESHOLD = 0.4  # Threshold for determining if a class is active (0.0 to 1.0)
+CLASS_THRESHOLD = 0.2  # Threshold for determining if a class is active (0.0 to 1.0)
 
 # Orange Pi Node.js server configuration
 ORANGEPI_IP = "192.168.2.218"  # Replace with your Orange Pi's actual IP address

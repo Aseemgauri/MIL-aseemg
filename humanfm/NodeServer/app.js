@@ -25,8 +25,8 @@ const PORT_NUM = 8000;
 let latestClassifications = [];
 let lastClassificationTime = null;
 
-// Define the 5 specific classes we care about (must match database)
-const TARGET_CLASSES = ["Baby crying", "Cat", "Rooster", "Cricket", "Dog"];
+// Define the 5 specific classes we care about (must match Python server output)
+const TARGET_CLASSES = ["Baby cry", "Cat", "Rooster", "Cricket", "Dog"];
 
 console.log("Setting up Express middleware...");
 
@@ -142,10 +142,22 @@ app.get("/HumanFM/classes", async function(req, res) {
         let allClasses = [];
         for (let cls of presentClasses) {
           console.log(`Looking up class in database: "${cls.label}"`);
+          
+          // First try exact match
           let classData = await classesTable.all(
             "SELECT * FROM classes WHERE name = ?",
             cls.label
           );
+          
+          // If exact match fails, try partial matching
+          if (classData.length === 0) {
+            console.log(`Exact match failed, trying partial match for: "${cls.label}"`);
+            classData = await classesTable.all(
+              "SELECT * FROM classes WHERE LOWER(name) LIKE '%' || LOWER(?) || '%' OR LOWER(?) LIKE '%' || LOWER(name) || '%'",
+              [cls.label, cls.label]
+            );
+          }
+          
           if (classData.length > 0) {
             console.log(`Found class in database: ${classData[0].name} (ID: ${classData[0].id})`);
             allClasses.push(classData[0]);
@@ -264,11 +276,21 @@ async function getClassLevels() {
     const levels = [];
     
     for (const className of TARGET_CLASSES) {
-      const result = await db.all("SELECT level FROM classes WHERE name = ?", className);
+      // First try exact match
+      let result = await db.all("SELECT level FROM classes WHERE name = ?", className);
+      
+      // If exact match fails, try partial matching
+      if (result.length === 0) {
+        result = await db.all(
+          "SELECT level FROM classes WHERE LOWER(name) LIKE '%' || LOWER(?) || '%' OR LOWER(?) LIKE '%' || LOWER(name) || '%'",
+          [className, className]
+        );
+      }
+      
       if (result.length > 0) {
         levels.push(parseFloat(result[0].level));
       } else {
-        levels.push(0.0); // Default level if class not found
+        levels.push(50.0); // Default level if class not found (50% volume)
       }
     }
     
@@ -276,7 +298,7 @@ async function getClassLevels() {
     return levels;
   } catch (err) {
     console.error("Error getting class levels:", err);
-    return [0.0, 0.0, 0.0, 0.0, 0.0]; // Default values on error
+    return [50.0, 50.0, 50.0, 50.0, 50.0]; // Default values on error
   }
 }
 
@@ -293,7 +315,20 @@ function getClasses() {
     // Check each target class
     for (let i = 0; i < TARGET_CLASSES.length; i++) {
       const className = TARGET_CLASSES[i];
-      const classification = latestClassifications.find(cls => cls.label === className);
+      
+      // First try exact match
+      let classification = latestClassifications.find(cls => cls.label === className);
+      
+      // If exact match fails, try partial matching (like Python server does)
+      if (!classification) {
+        const classNameLower = className.toLowerCase();
+        classification = latestClassifications.find(cls => {
+          const labelLower = cls.label.toLowerCase();
+          // Check both directions: target in received OR received in target
+          return classNameLower.includes(labelLower) || labelLower.includes(classNameLower);
+        });
+      }
+      
       if (classification && classification.score >= 0.5) {
         detectionVector[i] = 1;
       }

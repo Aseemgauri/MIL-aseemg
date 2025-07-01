@@ -168,5 +168,5 @@ std::vector<int> HumanFMClient::getClasses() {
 }
 
 std::vector<std::string> HumanFMClient::getClassNames() {
-            return {"Speech", "Music", "Vehicle", "Animal", "Dog"};
+            return {"Baby cry", "Cat", "Rooster", "Cricket", "Dog"};
 } 
