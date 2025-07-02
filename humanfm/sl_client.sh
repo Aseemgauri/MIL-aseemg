@@ -1,2 +1,2 @@
-cd ./humanfm/SemanticListening/SL-RT
+cd ./SemanticListening/SL-RT
 ./realtime_processor ./pretrained/tfgridnet.onnx

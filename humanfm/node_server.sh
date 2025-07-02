@@ -1,2 +1,2 @@
-cd ./humanfm/NodeServer
+cd ./NodeServer
 node app.js

@@ -1,3 +1,3 @@
-cd ./humanfm/GST_Client
+cd ./GST_Client
 ./chunks_audio
 
