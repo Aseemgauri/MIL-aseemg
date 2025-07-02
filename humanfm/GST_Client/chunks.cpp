@@ -1,8 +1,6 @@
 #include "AudioFile.h"
 #include <gst/gst.h>
-#include <gst/app/gstappsrc.h>
 #include <iostream>
-#include <cstring>
 #include <string>
 #include <thread>
 #include <chrono>
@@ -53,57 +51,7 @@ std::string getAudioSourceString() {
     return audioSrc;
 }
 
-// Helper function to provide basic information related to the WAV file.
-int print_file_data() {
-  // Attempting to load the file data.
-  if (!isFileLoaded) {
-    std::cout << "Error loading WAV file!\n";
-    return -1;
-  } else {
-    std::cout << "Success\n";
-    audioFile.printSummary();
-    return 1;
-  }
-}
 
-// Function responsible for processing data from audio file in one second chucks.
-void print_buffered_samples() {
-  if (!isFileLoaded) {
-    std::cout << "No file loaded for processing\n";
-    return;
-  }
-  
-  int numSamples = audioFile.getNumSamplesPerChannel();
-  const int chunkSize = 352; // ~8ms at 44.1kHz
-  const int bufferSize = 44100; // 1 second buffer
-  static float oneSecondFloatBuf[bufferSize];
-  int writeIndex = 0;
-
-  for (int i = 0; i < numSamples; i += chunkSize) {
-      int end = std::min(i + chunkSize, numSamples);
-
-      // Process chunk (append to buffer)
-      for (int j = i; j < end && writeIndex < bufferSize; ++j) {
-        oneSecondFloatBuf[writeIndex++] = audioFile.samples[0][j];
-      }
-
-      if (writeIndex >= bufferSize) {
-          std::cout << "1-second buffer ready! (" << writeIndex << " samples)\n";
-          // send_float_buf(oneSecondFloatBuf, bufferSize);
-          writeIndex = 0; // reset for next second
-      }
-  }
-}
-
-// TODO: Send audio data from the buffer to the server.
-// Steps:
-// 0.) Create a function called wait_for_python_server to have the client connect to the
-// server running on the python (may be local).
-// 0.1) Have this server function run in main before.
-// 1.) Compress the bytes (the audio samples themselves)
-// 2.) Sends through the socket (construct a new socket)
-// 3.) Ideally find a C++ audio streaming library and then have Malek review. (i.e. G streamer).
-// 4.) Python server will return class data back to the client.
 
 // Function to automatically connect JACK ports for the GST client
 bool connectJackPorts(const std::string& clientName) {
@@ -205,11 +153,11 @@ int main(int argc, char *argv[]) {
   std::string pipeline_str;
 
 #if USE_FILE_AUDIO
-  // File mode - stream WAV file
+  // File mode - stream WAV file at real-time rate (16kHz)
   pipeline_str = "filesrc location=" + std::string(argv[1]) + 
                  " ! wavparse ! audioconvert ! audioresample "
                  "! audio/x-raw,rate=16000,format=S16LE,channels=1 "
-                 "! opusenc ! rtpopuspay ! udpsink ";
+                 "! identity sync=true ! opusenc ! rtpopuspay ! udpsink ";
   
 #if USE_BROADCAST
   pipeline_str += "host=255.255.255.255 port=5000";

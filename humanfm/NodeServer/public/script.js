@@ -33,7 +33,7 @@
     id("start-btn").disabled = true;
     simulationTimerId = setInterval(function() {
       fetchClassData();
-    }, 5000);
+    }, 1000); // Poll every 1 second for near real-time updates
   }
 
   /**

@@ -1,14 +1,12 @@
 "use strict";
 
-process.stdout.write("🚀 Starting HumanFM server...\n");
-console.log("Starting HumanFM server...");
+console.log("🚀 Starting HumanFM server...");
 
 const express = require("express");
 console.log("Express loaded");
 
 const net = require('net');
 const fs = require('fs');
-const path = require('path');
 const app = express();
 const multer = require("multer");
 console.log("Multer loaded");
@@ -17,9 +15,12 @@ const sqlite3 = require("sqlite3");
 const sqlite = require("sqlite");
 console.log("SQLite loaded");
 
+// Constants
 const USER_ERROR = 400;
 const SERVER_ERROR = 500;
 const PORT_NUM = 8000;
+const DATA_EXPIRY_TIME = 5000; // 5 seconds - how long to keep classification data
+const DETECTION_THRESHOLD = 0.5; // Minimum score for class detection
 
 // Global variable to store the latest classification results (top 5)
 let latestClassifications = [];
@@ -27,6 +28,12 @@ let lastClassificationTime = null;
 
 // Define the 5 specific classes we care about (must match Python server output)
 const TARGET_CLASSES = ["Baby cry", "Cat", "Rooster", "Cricket", "Dog"];
+
+// Hysteresis system: Track class states and activation timers
+let previousClassStates = [0, 0, 0, 0, 0]; // Previous detection states
+let currentDisplayStates = [0, 0, 0, 0, 0]; // What we're currently showing to clients
+let classActivationTimers = [null, null, null, null, null]; // Timers for each class
+const MINIMUM_ACTIVATION_TIME = 5000; // 5 seconds minimum display time
 
 console.log("Setting up Express middleware...");
 
@@ -36,150 +43,63 @@ app.use(multer().none());
 
 console.log("Express middleware configured");
 
-// // Temporary global variables to handle incoming C++ server data.
-// let activeClasses = [];
-// let soundLevels = [];
-
-// // Create a new socket and connect to C++ server running on port 4000.
-// const client = new net.Socket();
-// client.connect(4000, '127.0.0.1', () => {
-//     console.log('Connected to C++ server!');
-// });
-
-// // Handle incoming data from the server.
-// client.on('data', (data) => {
-//   let recClasses = [];
-//   let recSounds = [];
-
-//   // Read data related to active classes.
-//   for (let i = 0; i < 20; i++) {
-//     recClasses.push(data.readInt32LE(4 + i * 4));
-//   }
-
-//   // Read data related to sound levels for each class.
-//   let offset = 4 + 20 * 4;
-//   for (let i = 0; i < 20; i++) {
-//     recSounds.push(data.readFloatLE(offset + i * 4));
-//   }
-
-//   activeClasses = recClasses;
-//   soundLevels = recSounds;
-
-//   console.log("Received activeClasses:", recClasses);
-//   console.log("Received soundLevels:", recSounds);
-// });
-
-// // Temporary function to handle sending data to the server.
-// function sendClientData() {
-//   // Prepare buffer for sending updated data.
-//   let buffer = Buffer.alloc(164);
-
-//   // Writing our active classes to the buffer and introducing
-//   // variable sound data.
-//   for (let i = 0; i < 20; i++) {
-//     buffer.writeInt32LE(activeClasses[i], 4 + i * 4);
-//   }
-
-//   // Only modifying the active classes.
-//   let offset = 4 + 20 * 4;
-//   for (let i = 0; i < 20; i++) {
-//     if (activeClasses[i] == 1) {
-//       let randFloat = Math.round(Math.random() * 100) / 100;
-//       buffer.writeFloatLE(parseFloat(randFloat), offset + i * 4);
-//     } else {
-//       buffer.writeFloatLE(soundLevels[i], offset + i * 4);
-//     }
-//   }
-
-//   // Simulate termination condition.
-//   if (Math.random() < 0.1) {
-//       buffer.writeInt32LE(1, 0);
-//       console.log("Sending termination signal...");
-//       return -1;
-//   }
-
-//   client.write(buffer);
-//   return 0;
-// }
-
-// // Call the send function under a time interval.
-// let intervalId = setInterval(() => {
-//   console.log("Attempting to send server data.");
-//   let termStatus = sendClientData();
-//   if (termStatus == -1) {
-//     clearInterval(intervalId);
-//   }
-// }, 10000);
-
-// // Handle errors.
-// client.on("error", (err) => {
-//   console.error("Socket error:", err.message);
-// });
-
-// // Handle connection close.
-// client.on('close', () => {
-//     console.log('Connection closed.');
-// });
+// =============================================================================
+// HTTP ENDPOINTS
+// =============================================================================
 
 // This function extracts data related to the classes from the database.
 app.get("/HumanFM/classes", async function(req, res) {
   try {
     let classesTable = await getDBConnection();
     
-    // Check if we have recent classification data (within last 5 seconds)
-    const now = Date.now();
-    const dataAge = lastClassificationTime ? now - lastClassificationTime : Infinity;
-    const maxAge = 5000; // 5 seconds
+    // Get hysteresis-processed class detection states (immediate activation, 5s minimum duration)
+    const displayStates = getClasses();
     
-    if (latestClassifications && latestClassifications.length > 0 && dataAge < maxAge) {
-      console.log(`Serving ${latestClassifications.length} real classifications (${Math.round(dataAge/1000)}s old)`);
+    // Find which classes are currently being displayed (with hysteresis)
+    let activeClassIndices = [];
+    for (let i = 0; i < displayStates.length; i++) {
+      if (displayStates[i] === 1) {
+        activeClassIndices.push(i);
+      }
+    }
+    
+    if (activeClassIndices.length > 0) {
+      console.log(`Serving ${activeClassIndices.length} hysteresis-processed classes: ${activeClassIndices.map(i => TARGET_CLASSES[i]).join(", ")}`);
       
-      // Get all the classes that are present (score >= 0.5)
-      let presentClasses = latestClassifications.filter(cls => cls.score >= 0.5);
-      
-      if (presentClasses.length > 0) {
-        // Return all present classes
-        let allClasses = [];
-        for (let cls of presentClasses) {
-          console.log(`Looking up class in database: "${cls.label}"`);
-          
-          // First try exact match
-          let classData = await classesTable.all(
-            "SELECT * FROM classes WHERE name = ?",
-            cls.label
+      // Look up each active class in the database
+      let allClasses = [];
+      for (const classIndex of activeClassIndices) {
+        const className = TARGET_CLASSES[classIndex];
+        console.log(`Looking up class in database: "${className}"`);
+        
+        // First try exact match
+        let classData = await classesTable.all(
+          "SELECT * FROM classes WHERE name = ?",
+          className
+        );
+        
+        // If exact match fails, try partial matching
+        if (classData.length === 0) {
+          classData = await classesTable.all(
+            "SELECT * FROM classes WHERE LOWER(name) LIKE '%' || LOWER(?) || '%' OR LOWER(?) LIKE '%' || LOWER(name) || '%'",
+            [className, className]
           );
-          
-          // If exact match fails, try partial matching
-          if (classData.length === 0) {
-            console.log(`Exact match failed, trying partial match for: "${cls.label}"`);
-            classData = await classesTable.all(
-              "SELECT * FROM classes WHERE LOWER(name) LIKE '%' || LOWER(?) || '%' OR LOWER(?) LIKE '%' || LOWER(name) || '%'",
-              [cls.label, cls.label]
-            );
-          }
-          
-          if (classData.length > 0) {
-            console.log(`Found class in database: ${classData[0].name} (ID: ${classData[0].id})`);
-            allClasses.push(classData[0]);
-          } else {
-            console.log(`Class not found in database: "${cls.label}"`);
-          }
         }
-        await classesTable.close();
-        console.log(`Returning ${allClasses.length} classes to frontend`);
-        res.json(allClasses);
-      } else {
-        // No classes detected with high confidence
-        console.log("No active classes in recent data");
-        await classesTable.close();
-        res.json([]);
+        
+        if (classData.length > 0) {
+          console.log(`Found class in database: ${classData[0].name} (ID: ${classData[0].id})`);
+          allClasses.push(classData[0]);
+        } else {
+          console.log(`Class not found in database: "${className}"`);
+        }
       }
+      
+      await classesTable.close();
+      console.log(`Returning ${allClasses.length} classes to frontend`);
+      res.json(allClasses);
     } else {
-      if (dataAge >= maxAge) {
-        console.log(`Classification data too old (${Math.round(dataAge/1000)}s), returning empty`);
-      } else {
-        console.log("No real classifications available yet");
-      }
+      // No classes currently being displayed (after hysteresis processing)
+      console.log("No active classes after hysteresis processing");
       await classesTable.close();
       res.json([]);
     }
@@ -204,7 +124,8 @@ app.post("/HumanFM/classes/update", async function(req, res) {
       res.status(USER_ERROR).send("An error occurred extracting form data. Try again later");
     }
   } catch (err) {
-
+    console.error("Error updating class level:", err);
+    res.status(SERVER_ERROR).send("An error occurred on the server. Try again later");
   }
 });
 
@@ -217,8 +138,8 @@ app.post("/HumanFM/classify", (req, res) => {
       latestClassifications = req.body.classifications;
       lastClassificationTime = Date.now(); // Store timestamp
       
-      // Log which classes are present (score >= 0.5)
-      let presentClasses = latestClassifications.filter(cls => cls.score >= 0.5);
+      // Log which classes are present (score >= threshold)
+      let presentClasses = latestClassifications.filter(cls => cls.score >= DETECTION_THRESHOLD);
       if (presentClasses.length > 0) {
         console.log("Active classes:", presentClasses.map(cls => cls.label).join(", "));
       } else {
@@ -251,12 +172,11 @@ async function getDBConnection() {
 app.use(express.static('public'));
 const PORT = process.env.PORT || PORT_NUM;
 app.listen(PORT, '0.0.0.0', () => {
-  process.stdout.write(`🌐 Server running on http://0.0.0.0:${PORT}\n`);
-  console.log(`Server running on http://0.0.0.0:${PORT}`);
-  console.log(`Access from other devices: http://<orange-pi-ip>:${PORT}`);
+  console.log(`🌐 Server running on http://0.0.0.0:${PORT}`);
+  console.log(`   Access from other devices: http://<orange-pi-ip>:${PORT}`);
 });
 
-process.stdout.write("📡 Setting up Unix domain socket...\n");
+console.log("📡 Setting up Unix domain socket...");
 
 // =============================================================================
 // UNIX DOMAIN SOCKET SERVER FOR C++ CLIENT
@@ -302,16 +222,15 @@ async function getClassLevels() {
   }
 }
 
-// Helper function to get current class detection status (multihot vector)
+// Helper function to get current class detection status with hysteresis (multihot vector)
 function getClasses() {
   const now = Date.now();
   const dataAge = lastClassificationTime ? now - lastClassificationTime : Infinity;
-  const maxAge = 5000; // 5 seconds
   
-  // Initialize all classes as not detected
-  const detectionVector = [0, 0, 0, 0, 0];
+  // Get raw detections from latest classifications
+  const rawDetectionVector = [0, 0, 0, 0, 0];
   
-  if (latestClassifications && latestClassifications.length > 0 && dataAge < maxAge) {
+  if (latestClassifications && latestClassifications.length > 0 && dataAge < DATA_EXPIRY_TIME) {
     // Check each target class
     for (let i = 0; i < TARGET_CLASSES.length; i++) {
       const className = TARGET_CLASSES[i];
@@ -329,13 +248,58 @@ function getClasses() {
         });
       }
       
-      if (classification && classification.score >= 0.5) {
-        detectionVector[i] = 1;
+      if (classification && classification.score >= DETECTION_THRESHOLD) {
+        rawDetectionVector[i] = 1;
       }
     }
   }
   
-  return detectionVector;
+  // Apply hysteresis logic for each class
+  for (let i = 0; i < TARGET_CLASSES.length; i++) {
+    const className = TARGET_CLASSES[i];
+    const rawState = rawDetectionVector[i];
+    const prevState = previousClassStates[i];
+    const currentDisplayState = currentDisplayStates[i];
+    
+    if (rawState === 1) {
+      // Class is currently detected
+      if (prevState === 0) {
+        // 0 → 1 transition: IMMEDIATE ACTIVATION
+        console.log(`🟢 Class ACTIVATED: ${className} - showing immediately`);
+        currentDisplayStates[i] = 1;
+        classActivationTimers[i] = now; // Start timer
+      } else {
+        // 1 → 1 transition: staying active, keep timer unchanged
+        currentDisplayStates[i] = 1;
+      }
+      
+    } else {
+      // Class is currently NOT detected (rawState === 0)
+      if (currentDisplayState === 1) {
+        // We're currently showing this class, check if we can deactivate it
+        const activationTime = classActivationTimers[i];
+        if (activationTime && (now - activationTime) >= MINIMUM_ACTIVATION_TIME) {
+          // Class has been active for at least 5 seconds - allow deactivation
+          console.log(`🔴 Class DEACTIVATED: ${className} - was active for ${Math.round((now - activationTime)/1000)}s`);
+          currentDisplayStates[i] = 0;
+          classActivationTimers[i] = null; // Reset timer
+        } else {
+          // Class has NOT been active for 5 seconds yet - keep showing it
+          const timeRemaining = activationTime ? MINIMUM_ACTIVATION_TIME - (now - activationTime) : 0;
+          console.log(`⏳ Class ${className} not detected but keeping active (${activationTime ? Math.round((now - activationTime)/1000) : 0}s/${Math.round(MINIMUM_ACTIVATION_TIME/1000)}s)`);
+          currentDisplayStates[i] = 1; // Keep it active
+        }
+      } else {
+        // Class not detected and not currently displayed - stay inactive
+        currentDisplayStates[i] = 0;
+      }
+    }
+  }
+  
+  // Update previous states for next cycle
+  previousClassStates = [...rawDetectionVector];
+  
+  return currentDisplayStates;
 }
 
 // Create Unix domain socket server
@@ -394,11 +358,10 @@ const socketServer = net.createServer((socket) => {
 
 // Start Unix domain socket server
 socketServer.listen(SOCKET_PATH, () => {
-  process.stdout.write(`🔌 Unix domain socket server listening on ${SOCKET_PATH}\n`);
   console.log(`🔌 Unix domain socket server listening on ${SOCKET_PATH}`);
   console.log(`   Available commands: getClassLevels, getClasses`);
   console.log(`   Target classes: ${TARGET_CLASSES.join(', ')}`);
-  process.stdout.write("✅ HumanFM server fully initialized!\n");
+  console.log("✅ HumanFM server fully initialized!");
 });
 
 // Clean up socket on exit
