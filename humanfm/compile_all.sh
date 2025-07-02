@@ -1,4 +1,4 @@
-cd /home/orangepi/Documents/MIL-aseemg/humanfm/GST_Client
+cd ./humanfm/GST_Client
 make
-cd /home/orangepi/Documents/MIL-aseemg/humanfm/SemanticListening/SL-RT
+cd ../SemanticListening/SL-RT
 make

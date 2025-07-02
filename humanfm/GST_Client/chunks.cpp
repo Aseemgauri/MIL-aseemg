@@ -7,8 +7,10 @@
 #include <jack/jack.h>
 
 /*----- Configuration Macros ----- */
-#define USE_BROADCAST 1  // Set to 1 for broadcast, 0 for multicast
+#define USE_BROADCAST 0  // Set to 1 for broadcast, 0 for multicast
 #define USE_FILE_AUDIO 0  // Set to 1 for WAV file, 0 for live microphone
+#define USE_DIRECT_IP 1   // Set to 1 for direct IP, 0 for broadcast/multicast
+#define TARGET_IP "100.121.151.92"  // Python server IP address
 
 // Audio backend selection (choose one)
 #define AUDIO_BACKEND_AUTO 0      // autoaudiosrc (automatic selection)
@@ -159,7 +161,10 @@ int main(int argc, char *argv[]) {
                  "! audio/x-raw,rate=16000,format=S16LE,channels=1 "
                  "! identity sync=true ! opusenc ! rtpopuspay ! udpsink ";
   
-#if USE_BROADCAST
+#if USE_DIRECT_IP
+  pipeline_str += "host=" TARGET_IP " port=5000";
+  std::cout << "📡 Using FILE + DIRECT IP mode (" << TARGET_IP << ":5000)" << std::endl;
+#elif USE_BROADCAST
   pipeline_str += "host=255.255.255.255 port=5000";
   std::cout << "📡 Using FILE + BROADCAST mode (255.255.255.255:5000)" << std::endl;
 #else
@@ -181,7 +186,10 @@ int main(int argc, char *argv[]) {
                  "! rtpopuspay "
                  "! udpsink ";
 
-#if USE_BROADCAST
+#if USE_DIRECT_IP
+  pipeline_str += "host=" TARGET_IP " port=5000";
+  std::cout << "📡 Using LIVE + DIRECT IP mode (" << TARGET_IP << ":5000)" << std::endl;
+#elif USE_BROADCAST
   pipeline_str += "host=255.255.255.255 port=5000";
   std::cout << "📡 Using LIVE + BROADCAST mode (255.255.255.255:5000)" << std::endl;
 #else

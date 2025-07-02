@@ -14,7 +14,9 @@ from mdl_model import MdlModel
 
 # ----- Configuration -----
 # Audio processing settings
-USE_BROADCAST = True  # Set to True for broadcast, False for multicast
+USE_DIRECT_IP = True   # Set to True for direct IP, False for broadcast/multicast
+USE_BROADCAST = False  # Set to True for broadcast, False for multicast
+LISTEN_IP = "0.0.0.0"  # Listen on all interfaces to accept from any sender
 UDP_PORT = 5000
 MULTICAST_ADDRESS = "239.1.1.1"
 
@@ -24,7 +26,7 @@ DEMO_CLASS = "Baby cry"  # The class to constantly show as detected in demo mode
 CLASS_THRESHOLD = 0.1  # Threshold for determining if a class is active (0.0 to 1.0)
 
 # Node.js server configuration
-ORANGEPI_IP = "192.168.2.218"  # Replace with your Orange Pi's actual IP address
+ORANGEPI_IP = "100.82.70.55"  # Replace with your Orange Pi's actual IP address
 NODE_SERVER_PORT = 8000
 
 # Model initialization
@@ -43,7 +45,20 @@ Gst.init(None)
 # and processing in a format that allows Python to read buffered data.
 # Modifications made to allow for one channel, 16-bit samples, and 16kHz.
 # ----- GStreamer Pipeline Setup -----
-if USE_BROADCAST:
+if USE_DIRECT_IP:
+    # Direct IP mode - listen on specific interface
+    pipeline_str = (
+        f'udpsrc address={LISTEN_IP} port={UDP_PORT} buffer-size=8192 '
+        'caps="application/x-rtp,media=audio,encoding-name=OPUS,payload=96" '
+        '! rtpopusdepay '
+        '! decodebin '
+        '! audioconvert '
+        '! audioresample '
+        '! audio/x-raw,rate=16000,format=S16LE,channels=1 '
+        '! appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true'
+    )
+    print(f"📡 DIRECT IP mode (LOW-LATENCY) - listening on {LISTEN_IP}:{UDP_PORT}")
+elif USE_BROADCAST:
     # Broadcast mode - minimal buffering for real-time processing
     pipeline_str = (
         f'udpsrc port={UDP_PORT} buffer-size=8192 '

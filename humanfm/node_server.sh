@@ -1,2 +1,2 @@
-cd /home/orangepi/Documents/MIL-aseemg/humanfm/NodeServer
+cd ./humanfm/NodeServer
 node app.js
