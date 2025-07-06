@@ -18,6 +18,11 @@
 #define JACK_CLIENT_NAME "SH-audio-RT"
 #define AUDIO_BUFFER_SIZE 1000000
 
+// Gain compensation factor for 24-bit to float conversion issue
+// Jack server uses 24-bit samples but clients expect normalized floats
+// This compensates for the scaling mismatch
+#define GAIN_COMPENSATION_FACTOR 8.0f
+
 using namespace std::chrono;
 
 // Global variables for timing
@@ -45,8 +50,8 @@ int jack_callback_process(jack_nframes_t nframes, void *arg) {
     
     // Copy samples to separate channel buffers
     for (jack_nframes_t i = 0; i < nframes; i++) {
-        audio_manager->left_buffer[i] = in0[i];   // Left channel
-        audio_manager->right_buffer[i] = in1[i];  // Right channel
+        audio_manager->left_buffer[i] = in0[i] * GAIN_COMPENSATION_FACTOR;   // Left channel with gain compensation
+        audio_manager->right_buffer[i] = in1[i] * GAIN_COMPENSATION_FACTOR;  // Right channel with gain compensation
     }
     
     // Write to separate ring buffers
@@ -70,8 +75,9 @@ int jack_callback_process(jack_nframes_t nframes, void *arg) {
                                                  samples_to_read * sizeof(float))) {
             // Clone mono output to both stereo channels
             for (size_t i = 0; i < samples_to_read; i++) {
-                out_left[i] = audio_manager->output_buffer[i];   // Left channel
-                out_right[i] = audio_manager->output_buffer[i];  // Right channel (same as left)
+                float compensated_sample = audio_manager->output_buffer[i] * GAIN_COMPENSATION_FACTOR;
+                out_left[i] = compensated_sample;   // Left channel
+                out_right[i] = compensated_sample;  // Right channel (same as left)
             }
         } else {
             // Failed to read, fill with zeros
@@ -157,6 +163,7 @@ bool AudioManager::initialize() {
     
     std::cout << "[AudioManager] JACK sample rate: " << sampling_rate << " Hz" << std::endl;
     std::cout << "[AudioManager] JACK buffer size: " << block_size << " frames" << std::endl;
+    std::cout << "[AudioManager] Gain compensation: " << GAIN_COMPENSATION_FACTOR << "x (for 24-bit format conversion)" << std::endl;
     
     // Verify sampling rate
     if (sampling_rate != 16000) {
@@ -265,10 +272,32 @@ bool AudioManager::start() {
     // Connect output ports (first 2 speakers for stereo)
     for (int i = 0; i < 2; i++) {
         std::string our_output_port = jack_get_client_name(jack_client) + std::string(":output_") + std::to_string(i);
-        if (jack_connect(jack_client, our_output_port.c_str(), physical_outputs[i])) {
+        std::string our_client_name = jack_get_client_name(jack_client);
+        
+        // Find any available output port that is NOT our own port
+        std::string target_output_port;
+        int non_self_port_index = 0;
+        
+        for (int j = 0; j < num_physical_outputs; j++) {
+            std::string port_name = physical_outputs[j];
+            // Skip our own ports - connect to any other available port
+            if (port_name.find(our_client_name + ":") == std::string::npos) {
+                if (non_self_port_index == i) {  // Use the i-th non-self port
+                    target_output_port = port_name;
+                    break;
+                }
+                non_self_port_index++;
+            }
+        }
+        
+        if (!target_output_port.empty()) {
+            if (jack_connect(jack_client, our_output_port.c_str(), target_output_port.c_str())) {
             std::cerr << "[AudioManager] Failed to connect output port " << i << std::endl;
+            } else {
+                std::cout << "[AudioManager] Connected " << our_output_port << " -> " << target_output_port << std::endl;
+            }
         } else {
-            std::cout << "[AudioManager] Connected " << our_output_port << " -> " << physical_outputs[i] << std::endl;
+            std::cerr << "[AudioManager] No suitable playback port found for output " << i << std::endl;
         }
     }
     

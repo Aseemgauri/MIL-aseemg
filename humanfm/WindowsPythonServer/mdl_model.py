@@ -5,29 +5,26 @@ import torch
 import torchaudio
 from inference_wrapper import InferenceWrapper
 
-# ----- Constants -----
-# Audio processing constants
-AUDIO_SAMPLE_RATE = 16000
+# Import configuration
+from config import SYSTEM_SAMPLE_RATE, SYSTEM_CLASS_NAMES
+
+# ----- Model-Specific Constants (DO NOT CHANGE) -----
+# These constants are tied to the trained model architecture and normalization
 AUDIO_MAX_VALUE = 32768.0  # 16-bit signed max value
+DEFAULT_INPUT_TDIM = 1024  # Model expects exactly 1024 time frames
+DEFAULT_MEL_BINS = 128     # Model expects exactly 128 mel frequency bins  
+FRAME_SHIFT_MS = 10        # Frame shift for spectrogram computation (model-specific)
 
-# Feature extraction constants
-DEFAULT_INPUT_TDIM = 1024
-DEFAULT_MEL_BINS = 128
-FRAME_SHIFT_MS = 10
-
-# Normalization constants (from model training)
+# Normalization constants from model training (DO NOT CHANGE)
 FBANK_MEAN = -4.2677393
 FBANK_STD = 4.5689974 * 2
-
-# Target classes for classification
-TARGET_CLASSES = ["Baby cry", "Cat", "Rooster", "Cricket", "Dog"]
 
 class MdlModel:
     """
     Model wrapper for AST ONNX model, providing audio preprocessing and inference.
     """
     def __init__(self, model_path, label_csv, input_tdim=DEFAULT_INPUT_TDIM, 
-                 mel_bins=DEFAULT_MEL_BINS, sampling_rate=AUDIO_SAMPLE_RATE, debug=False):
+                 mel_bins=DEFAULT_MEL_BINS, sampling_rate=SYSTEM_SAMPLE_RATE, debug=False):
         """
         Initialize the model wrapper.
         
@@ -52,7 +49,7 @@ class MdlModel:
         self.sampling_rate = sampling_rate
         self.debug = debug
         self.labels = self._load_labels(label_csv)
-        self.target_classes = TARGET_CLASSES.copy()
+        self.target_classes = SYSTEM_CLASS_NAMES.copy()
         
         # Validate target classes and show status
         self._validate_target_classes()
@@ -158,7 +155,7 @@ class MdlModel:
         Process audio and return classification scores for target classes.
         
         Args:
-            audio_bytes (bytes): Raw PCM 16-bit mono audio at 16kHz.
+            audio_bytes (bytes): Raw PCM 16-bit mono audio at configured sample rate.
         Returns:
             list: Target class labels and scores as list of tuples.
         """

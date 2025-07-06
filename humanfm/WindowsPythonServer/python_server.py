@@ -6,6 +6,9 @@ gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
 from mdl_model import MdlModel
 
+# Import configuration
+from config import *
+
 # Note: If GStreamer path issues occur, uncomment and modify the following:
 # import sys
 # gstreamer_site_packages = r"C:\Program Files\GStreamer\1.0\msvc_x86_64\lib\site-packages"
@@ -13,21 +16,21 @@ from mdl_model import MdlModel
 #     sys.path.insert(0, gstreamer_site_packages)
 
 # ----- Configuration -----
-# Audio processing settings
-USE_DIRECT_IP = True   # Set to True for direct IP, False for broadcast/multicast
-USE_BROADCAST = False  # Set to True for broadcast, False for multicast
-LISTEN_IP = "0.0.0.0"  # Listen on all interfaces to accept from any sender
-UDP_PORT = 5000
-MULTICAST_ADDRESS = "239.1.1.1"
+# Audio processing settings (based on SYSTEM_STREAMING_MODE)
+USE_DIRECT_IP = (SYSTEM_STREAMING_MODE == "unicast")
+USE_BROADCAST = (SYSTEM_STREAMING_MODE == "broadcast")
+LISTEN_IP = "0.0.0.0"  # Listen on all interfaces
+UDP_PORT = SYSTEM_UDP_STREAMING_PORT
+MULTICAST_ADDRESS = SYSTEM_MULTICAST_ADDRESS
 
 # Classification settings
-DEMO_MODE = False  # Set to True for demo mode, False for real classification
-DEMO_CLASS = "Baby cry"  # The class to constantly show as detected in demo mode
-CLASS_THRESHOLD = 0.1  # Threshold for determining if a class is active (0.0 to 1.0)
+DEMO_MODE = PYTHON_DEMO_MODE
+DEMO_CLASS = PYTHON_DEMO_CLASS
+CLASS_THRESHOLD = PYTHON_CLASS_THRESHOLD
 
 # Node.js server configuration
 ORANGEPI_IP = "100.82.70.55"  # Replace with your Orange Pi's actual IP address
-NODE_SERVER_PORT = 8000
+NODE_SERVER_PORT = SYSTEM_NODE_SERVER_PORT
 
 # Model initialization
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'audio_mdl.onnx')
@@ -48,39 +51,39 @@ Gst.init(None)
 if USE_DIRECT_IP:
     # Direct IP mode - listen on specific interface
     pipeline_str = (
-        f'udpsrc address={LISTEN_IP} port={UDP_PORT} buffer-size=8192 '
+        f'udpsrc address={LISTEN_IP} port={UDP_PORT} buffer-size={PYTHON_BUFFER_SIZE} '
         'caps="application/x-rtp,media=audio,encoding-name=OPUS,payload=96" '
         '! rtpopusdepay '
         '! decodebin '
         '! audioconvert '
         '! audioresample '
-        '! audio/x-raw,rate=16000,format=S16LE,channels=1 '
+        f'! audio/x-raw,rate={SYSTEM_SAMPLE_RATE},format=S16LE,channels=1 '
         '! appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true'
     )
     print(f"📡 DIRECT IP mode (LOW-LATENCY) - listening on {LISTEN_IP}:{UDP_PORT}")
 elif USE_BROADCAST:
     # Broadcast mode - minimal buffering for real-time processing
     pipeline_str = (
-        f'udpsrc port={UDP_PORT} buffer-size=8192 '
+        f'udpsrc port={UDP_PORT} buffer-size={PYTHON_BUFFER_SIZE} '
         'caps="application/x-rtp,media=audio,encoding-name=OPUS,payload=96" '
         '! rtpopusdepay '
         '! decodebin '
         '! audioconvert '
         '! audioresample '
-        '! audio/x-raw,rate=16000,format=S16LE,channels=1 '
+        f'! audio/x-raw,rate={SYSTEM_SAMPLE_RATE},format=S16LE,channels=1 '
         '! appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true'
     )
     print(f"📡 BROADCAST mode (LOW-LATENCY) - listening on port {UDP_PORT}")
 else:
     # Multicast mode - minimal buffering for real-time processing
     pipeline_str = (
-        f'udpsrc uri=udp://{MULTICAST_ADDRESS}:{UDP_PORT} buffer-size=8192 '
+        f'udpsrc uri=udp://{MULTICAST_ADDRESS}:{UDP_PORT} buffer-size={PYTHON_BUFFER_SIZE} '
         'caps="application/x-rtp,media=audio,encoding-name=OPUS,payload=96" '
         '! rtpopusdepay '
         '! decodebin '
         '! audioconvert '
         '! audioresample '
-        '! audio/x-raw,rate=16000,format=S16LE,channels=1 '
+        f'! audio/x-raw,rate={SYSTEM_SAMPLE_RATE},format=S16LE,channels=1 '
         '! appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true'
     )
     print(f"📡 MULTICAST mode (LOW-LATENCY) - listening on {MULTICAST_ADDRESS}:{UDP_PORT}")
@@ -90,10 +93,10 @@ pipeline = Gst.parse_launch(pipeline_str)
 appsink = pipeline.get_by_name("sink")
 
 # ----- Audio Configuration -----
-# Audio format: 16-bit mono PCM @ 16kHz
-# 1 second = 16,000 samples × 2 bytes = 32,000 bytes
-TARGET_BYTES = 32000
-AUDIO_SAMPLE_RATE = 16000
+# Audio format: 16-bit mono PCM @ configured sample rate
+# 1 second = sample_rate samples × 2 bytes = sample_rate * 2 bytes
+TARGET_BYTES = SYSTEM_SAMPLE_RATE * 2  # 2 bytes per sample (16-bit)
+AUDIO_SAMPLE_RATE = SYSTEM_SAMPLE_RATE
 AUDIO_CHANNELS = 1
 AUDIO_SAMPLE_WIDTH = 2  # 16-bit = 2 bytes
 

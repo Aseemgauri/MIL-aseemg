@@ -4,6 +4,7 @@
 #include <jack/jack.h>
 #include <atomic>
 #include "unified_ringbuffer.h"
+#include "sl_config.h"  // Include the static configuration (auto-generated)
 
 class AudioManager {
 public:
@@ -32,14 +33,14 @@ public:
     
     // Public members for JACK callbacks
     std::atomic<bool> is_running;
-    jack_port_t* input_ports[2];   // 2 input ports (pre-allocated)
-    jack_port_t* output_ports[2];  // 2 output ports for stereo (pre-allocated)
+    jack_port_t* input_ports[SL_INPUT_PORTS];   // Input ports (from configuration)
+    jack_port_t* output_ports[SL_OUTPUT_PORTS];  // Output ports for stereo (from configuration)
     AudioIOBuffer left_input_ringbuffer;   // Separate buffer for left channel
     AudioIOBuffer right_input_ringbuffer;  // Separate buffer for right channel
     AudioIOBuffer output_ringbuffer;
     
     // Pre-allocated buffers for JACK callback (no dynamic allocation)
-    static constexpr size_t MAX_JACK_BUFFER_SIZE = 4096;  // Should be larger than any JACK buffer size
+    static constexpr size_t MAX_JACK_BUFFER_SIZE = SL_MAX_JACK_BUFFER_SIZE;  // From configuration
     float left_buffer[MAX_JACK_BUFFER_SIZE];              // For left channel storage
     float right_buffer[MAX_JACK_BUFFER_SIZE];             // For right channel storage
     float output_buffer[MAX_JACK_BUFFER_SIZE];            // For output data

@@ -5,21 +5,11 @@
 #include <thread>
 #include <chrono>
 #include <jack/jack.h>
+#include "gst_config.h"  // Include the static configuration (auto-generated)
 
-/*----- Configuration Macros ----- */
-#define USE_BROADCAST 0  // Set to 1 for broadcast, 0 for multicast
-#define USE_FILE_AUDIO 0  // Set to 1 for WAV file, 0 for live microphone
-#define USE_DIRECT_IP 1   // Set to 1 for direct IP, 0 for broadcast/multicast
-#define TARGET_IP "100.121.151.92"  // Python server IP address
-
-// Audio backend selection (choose one)
-#define AUDIO_BACKEND_AUTO 0      // autoaudiosrc (automatic selection)
-#define AUDIO_BACKEND_JACK 1      // jackaudiosrc (for JACK server)
-#define AUDIO_BACKEND_PULSE 0     // pulsesrc (for PulseAudio)
-#define AUDIO_BACKEND_ALSA 0      // alsasrc (direct ALSA)
-
-// ALSA device specification (only used if AUDIO_BACKEND_ALSA is 1)
-#define ALSA_DEVICE "hw:0,0"      // Change to your specific device
+/*----- Configuration System ----- */
+// All configuration values are now loaded from system.conf
+// No more hardcoded values!
 
 /*----- Global Variables ----- */
 
@@ -29,31 +19,47 @@ bool isFileLoaded = false;
 
 /*----- Helper Functions ----- */
 
+std::string getTargetIP() {
+    std::string mode = SYSTEM_STREAMING_MODE;
+    if (mode == "multicast") {
+        return SYSTEM_MULTICAST_ADDRESS;
+    } else if (mode == "unicast") {
+        return SYSTEM_LAPTOP_IP;
+    } else {
+        return "255.255.255.255";  // Default to broadcast
+    }
+}
+
+std::string getFullAudioPath() {
+    return std::string(GST_AUDIO_FILE_DIRECTORY) + "/" + GST_DEFAULT_AUDIO_FILE;
+}
+
 std::string getAudioSourceString() {
     std::string audioSrc;
+    std::string backend = GST_AUDIO_BACKEND;
     
-#if AUDIO_BACKEND_JACK
-    // Configure jackaudiosrc with proper connection settings
-    audioSrc = "jackaudiosrc connect=auto-forced client-name=gst_audio_client";
-    std::cout << "🔊 Using JACK audio source (jackaudiosrc)" << std::endl;
-    std::cout << "   Connect mode: auto-forced (connects to available physical ports)" << std::endl;
-    std::cout << "   Make sure JACK server is running!" << std::endl;
-#elif AUDIO_BACKEND_PULSE
-    audioSrc = "pulsesrc";
-    std::cout << "🔊 Using PulseAudio source (pulsesrc)" << std::endl;
-#elif AUDIO_BACKEND_ALSA
-    audioSrc = "alsasrc device=" ALSA_DEVICE;
-    std::cout << "🔊 Using ALSA source (alsasrc) device: " << ALSA_DEVICE << std::endl;
-#else
-    audioSrc = "autoaudiosrc";
-    std::cout << "🔊 Using automatic audio source (autoaudiosrc)" << std::endl;
-    std::cout << "   ⚠️  This may conflict with JACK if it's running!" << std::endl;
-#endif
+    if (backend == "jack") {
+        // Configure jackaudiosrc with proper connection settings
+        audioSrc = std::string("jackaudiosrc connect=auto-forced client-name=") + GST_JACK_CLIENT_NAME;
+        std::cout << "🔊 Using JACK audio source (jackaudiosrc)" << std::endl;
+        std::cout << "   Connect mode: auto-forced (connects to available physical ports)" << std::endl;
+        std::cout << "   Audio amplification: " << GST_AMPLIFY_COMPENSATION << "x + Volume: " << GST_VOLUME_COMPENSATION << "x" << std::endl;
+        std::cout << "   Total gain boost for ML detection" << std::endl;
+        std::cout << "   Make sure JACK server is running!" << std::endl;
+    } else if (backend == "pulse") {
+        audioSrc = "pulsesrc";
+        std::cout << "🔊 Using PulseAudio source (pulsesrc)" << std::endl;
+    } else if (backend == "alsa") {
+        audioSrc = std::string("alsasrc device=") + GST_ALSA_DEVICE;
+        std::cout << "🔊 Using ALSA source (alsasrc) device: " << GST_ALSA_DEVICE << std::endl;
+    } else {
+        audioSrc = "autoaudiosrc";
+        std::cout << "🔊 Using automatic audio source (autoaudiosrc)" << std::endl;
+        std::cout << "   ⚠️  This may conflict with JACK if it's running!" << std::endl;
+    }
 
     return audioSrc;
 }
-
-
 
 // Function to automatically connect JACK ports for the GST client
 bool connectJackPorts(const std::string& clientName) {
@@ -126,138 +132,150 @@ bool connectJackPorts(const std::string& clientName) {
 
 // Puts together the different program pieces above.
 int main(int argc, char *argv[]) {
-  // Check command line arguments
-  if (USE_FILE_AUDIO && argc < 2) {
-    std::cout << "Usage: " << argv[0] << " <wav_file_path>" << std::endl;
-    std::cout << "Example: " << argv[0] << " audio/sample.wav" << std::endl;
-    return 1;
-  }
+    // Print configuration information
+    std::cout << "=== GST Client Configuration (from system.conf) ===" << std::endl;
+    std::cout << "Audio Mode: " << (GST_USE_FILE_AUDIO ? "file" : "live") << std::endl;
+    std::cout << "Audio Backend: " << GST_AUDIO_BACKEND << std::endl;
+    std::cout << "Sample Rate: " << SYSTEM_SAMPLE_RATE << " Hz" << std::endl;
+    std::cout << "Streaming Mode: " << SYSTEM_STREAMING_MODE << std::endl;
+    std::cout << "Target IP: " << getTargetIP() << std::endl;
+    std::cout << "UDP Port: " << SYSTEM_UDP_STREAMING_PORT << std::endl;
+    std::cout << "Volume Compensation: " << GST_VOLUME_COMPENSATION << "x" << std::endl;
+    std::cout << "Amplify Compensation: " << GST_AMPLIFY_COMPENSATION << "x" << std::endl;
+    std::cout << "========================================" << std::endl;
 
-  // Load WAV file if in file mode
-  if (USE_FILE_AUDIO) {
-    std::string file_path = argv[1];
-    isFileLoaded = audioFile.load(file_path);
-    if (!isFileLoaded) {
-      std::cout << "Error: Could not load WAV file: " << file_path << std::endl;
-      return 1;
-    }
-    std::cout << "✅ Loaded WAV file: " << file_path << std::endl;
-    audioFile.printSummary();
-  }
-
-  // Initializing Gstreamer and ensuring that we can process any command line arguments.
-  gst_init(&argc, &argv);
-
-  // Creating and parsing a Gstreamer pipeline string.
-  // Capturing audio from live microphone or file, converting to the proper format, preparing
-  // and creating packets to be sent to multiple receivers.
-  
-  std::string pipeline_str;
-
-#if USE_FILE_AUDIO
-  // File mode - stream WAV file at real-time rate (16kHz)
-  pipeline_str = "filesrc location=" + std::string(argv[1]) + 
-                 " ! wavparse ! audioconvert ! audioresample "
-                 "! audio/x-raw,rate=16000,format=S16LE,channels=1 "
-                 "! identity sync=true ! opusenc ! rtpopuspay ! udpsink ";
-  
-#if USE_DIRECT_IP
-  pipeline_str += "host=" TARGET_IP " port=5000";
-  std::cout << "📡 Using FILE + DIRECT IP mode (" << TARGET_IP << ":5000)" << std::endl;
-#elif USE_BROADCAST
-  pipeline_str += "host=255.255.255.255 port=5000";
-  std::cout << "📡 Using FILE + BROADCAST mode (255.255.255.255:5000)" << std::endl;
-#else
-  pipeline_str += "host=239.1.1.1 auto-multicast=true port=5000";
-  std::cout << "📡 Using FILE + MULTICAST mode (239.1.1.1:5000)" << std::endl;
-#endif
-
-#else
-  // Live microphone mode
-  std::string audioSrc = getAudioSourceString();
-  
-  pipeline_str = audioSrc + 
-                 " ! audioconvert "
-                 "! audioresample "
-                 "! audio/x-raw,rate=16000,format=S16LE,channels=2 "
-                 "! audioconvert "
-                 "! audio/x-raw,rate=16000,format=S16LE,channels=1 "
-                 "! opusenc "
-                 "! rtpopuspay "
-                 "! udpsink ";
-
-#if USE_DIRECT_IP
-  pipeline_str += "host=" TARGET_IP " port=5000";
-  std::cout << "📡 Using LIVE + DIRECT IP mode (" << TARGET_IP << ":5000)" << std::endl;
-#elif USE_BROADCAST
-  pipeline_str += "host=255.255.255.255 port=5000";
-  std::cout << "📡 Using LIVE + BROADCAST mode (255.255.255.255:5000)" << std::endl;
-#else
-  pipeline_str += "host=239.1.1.1 auto-multicast=true port=5000";
-  std::cout << "📡 Using LIVE + MULTICAST mode (239.1.1.1:5000)" << std::endl;
-#endif
-
-#endif
-
-  std::cout << "🔧 GStreamer pipeline: " << pipeline_str << std::endl;
-
-  // Parse and create the pipeline
-  GError *error = nullptr;
-  GstElement *pipeline = gst_parse_launch(pipeline_str.c_str(), &error);
-  
-  if (!pipeline) {
-    std::cout << "❌ Failed to create GStreamer pipeline!" << std::endl;
-    if (error) {
-      std::cout << "Error: " << error->message << std::endl;
-      g_error_free(error);
-    }
-    return 1;
-  }
-
-  std::cout << "✅ GStreamer pipeline created successfully" << std::endl;
-
-  // Start the pipeline and began recording from microphone or streaming file.
-  GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
-  
-  if (ret == GST_STATE_CHANGE_FAILURE) {
-    std::cout << "❌ Failed to start GStreamer pipeline!" << std::endl;
-    std::cout << "💡 Try running the audio diagnostic script: ./audio_device_check.sh" << std::endl;
+    bool useFileAudio = GST_USE_FILE_AUDIO;
     
-    // Check for JACK-specific errors
-    std::cout << "🔍 JACK Debugging Steps:" << std::endl;
-    std::cout << "   1. Check if JACK server is running: jack_lsp" << std::endl;
-    std::cout << "   2. Check JACK connections: jack_lsp -c" << std::endl;
-    std::cout << "   3. Check for audio input sources connected to system:capture_*" << std::endl;
-    
-    gst_object_unref(pipeline);
-    return 1;
-  }
+    // Load WAV file if in file mode (always use config file path)
+    if (useFileAudio) {
+        std::string file_path = getFullAudioPath();
+        
+        isFileLoaded = audioFile.load(file_path);
+        if (!isFileLoaded) {
+            std::cout << "Error: Could not load WAV file: " << file_path << std::endl;
+            std::cout << "💡 Check GST_AUDIO_FILE_DIRECTORY and GST_DEFAULT_AUDIO_FILE in system.conf" << std::endl;
+            return 1;
+        }
+        std::cout << "✅ Loaded WAV file: " << file_path << std::endl;
+        audioFile.printSummary();
+    }
 
-  std::cout << "✅ GStreamer pipeline started successfully" << std::endl;
+    // Initialize GStreamer
+    gst_init(&argc, &argv);
 
-#if USE_FILE_AUDIO
-  std::cout << "📁 Streaming WAV file... Press Ctrl+C to stop.\n";
-#else
-  std::cout << "🎤 Streaming live microphone audio... Press Ctrl+C to stop.\n";
-  
-  // Automatically connect JACK ports for live audio mode
-  std::thread connectionThread([&]() {
-    if (connectJackPorts("gst_audio_client")) {
-      std::cout << "🔊 Audio input successfully connected!" << std::endl;
+    // Build pipeline based on configuration
+    std::string pipeline_str;
+    std::string target_ip = getTargetIP();
+    int udp_port = SYSTEM_UDP_STREAMING_PORT;
+    int sample_rate = SYSTEM_SAMPLE_RATE;
+    std::string streaming_mode = SYSTEM_STREAMING_MODE;
+
+    if (useFileAudio) {
+        // File mode - stream WAV file at real-time rate
+        std::string file_path = getFullAudioPath();
+        
+        pipeline_str = "filesrc location=" + file_path + 
+                       " ! wavparse ! audioconvert ! audioresample "
+                       "! audio/x-raw,rate=" + std::to_string(sample_rate) + ",format=S16LE,channels=1 "
+                       "! identity sync=true ! opusenc ! rtpopuspay ! udpsink ";
+        
+        if (streaming_mode == "unicast") {
+            pipeline_str += "host=" + target_ip + " port=" + std::to_string(udp_port);
+            std::cout << "📡 Using FILE + UNICAST mode (" << target_ip << ":" << udp_port << ")" << std::endl;
+        } else if (streaming_mode == "multicast") {
+            pipeline_str += std::string("host=") + SYSTEM_MULTICAST_ADDRESS + " auto-multicast=true port=" + std::to_string(udp_port);
+            std::cout << "📡 Using FILE + MULTICAST mode (" << SYSTEM_MULTICAST_ADDRESS << ":" << udp_port << ")" << std::endl;
+        } else {
+            pipeline_str += std::string("host=") + GST_BROADCAST_ADDRESS + " port=" + std::to_string(udp_port);
+            std::cout << "📡 Using FILE + BROADCAST mode (" << GST_BROADCAST_ADDRESS << ":" << udp_port << ")" << std::endl;
+        }
     } else {
-      std::cout << "⚠️  Failed to auto-connect JACK ports. You may need to connect manually." << std::endl;
+        // Live microphone mode
+        std::string audioSrc = getAudioSourceString();
+        
+        // Pipeline with both amplification and volume for better ML detection
+        pipeline_str = audioSrc + 
+                       " ! audioconvert "
+                       "! audioamplify amplification=" + std::to_string(GST_AMPLIFY_COMPENSATION) + " "
+                       "! audioresample "
+                       "! audio/x-raw,rate=" + std::to_string(sample_rate) + ",format=S16LE,channels=2 "
+                       "! audioconvert "
+                       "! audio/x-raw,rate=" + std::to_string(sample_rate) + ",format=S16LE,channels=1 "
+                       "! volume volume=" + std::to_string(GST_VOLUME_COMPENSATION) + " "
+                       "! opusenc "
+                       "! rtpopuspay "
+                       "! udpsink ";
+
+        if (streaming_mode == "unicast") {
+            pipeline_str += "host=" + target_ip + " port=" + std::to_string(udp_port);
+            std::cout << "📡 Using LIVE + UNICAST mode (" << target_ip << ":" << udp_port << ")" << std::endl;
+        } else if (streaming_mode == "multicast") {
+            pipeline_str += std::string("host=") + SYSTEM_MULTICAST_ADDRESS + " auto-multicast=true port=" + std::to_string(udp_port);
+            std::cout << "📡 Using LIVE + MULTICAST mode (" << SYSTEM_MULTICAST_ADDRESS << ":" << udp_port << ")" << std::endl;
+        } else {
+            pipeline_str += std::string("host=") + GST_BROADCAST_ADDRESS + " port=" + std::to_string(udp_port);
+            std::cout << "📡 Using LIVE + BROADCAST mode (" << GST_BROADCAST_ADDRESS << ":" << udp_port << ")" << std::endl;
+        }
     }
-  });
-  connectionThread.detach(); // Let it run in background
-#endif
 
-  // Similar to a while true loop which ensures audio continues to be recorded
-  // until we manually sever the connection.
-  GMainLoop *loop = g_main_loop_new(nullptr, FALSE);
-  g_main_loop_run(loop);
+    std::cout << "🔧 GStreamer pipeline: " << pipeline_str << std::endl;
 
-  // Clean-up and freeing of memory.
-  gst_element_set_state(pipeline, GST_STATE_NULL);
-  gst_object_unref(pipeline);
-  return 0;
+    // Parse and create the pipeline
+    GError *error = nullptr;
+    GstElement *pipeline = gst_parse_launch(pipeline_str.c_str(), &error);
+    
+    if (!pipeline) {
+        std::cout << "❌ Failed to create GStreamer pipeline!" << std::endl;
+        if (error) {
+            std::cout << "Error: " << error->message << std::endl;
+            g_error_free(error);
+        }
+        return 1;
+    }
+
+    std::cout << "✅ GStreamer pipeline created successfully" << std::endl;
+
+    // Start the pipeline
+    GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        std::cout << "❌ Failed to start GStreamer pipeline!" << std::endl;
+        std::cout << "💡 Try running the audio diagnostic script: ./audio_device_check.sh" << std::endl;
+        
+        // Check for JACK-specific errors
+        std::cout << "🔍 JACK Debugging Steps:" << std::endl;
+        std::cout << "   1. Check if JACK server is running: jack_lsp" << std::endl;
+        std::cout << "   2. Check JACK connections: jack_lsp -c" << std::endl;
+        std::cout << "   3. Check for audio input sources connected to system:capture_*" << std::endl;
+        
+        gst_object_unref(pipeline);
+        return 1;
+    }
+
+    std::cout << "✅ GStreamer pipeline started successfully" << std::endl;
+
+    if (useFileAudio) {
+        std::cout << "📁 Streaming WAV file... Press Ctrl+C to stop.\n";
+    } else {
+        std::cout << "🎤 Streaming live microphone audio... Press Ctrl+C to stop.\n";
+        
+        // Automatically connect JACK ports for live audio mode
+        std::thread connectionThread([&]() {
+            if (connectJackPorts(GST_JACK_CLIENT_NAME)) {
+                std::cout << "🔊 Audio input successfully connected!" << std::endl;
+            } else {
+                std::cout << "⚠️  Failed to auto-connect JACK ports. You may need to connect manually." << std::endl;
+            }
+        });
+        connectionThread.detach(); // Let it run in background
+    }
+
+    // Keep the pipeline running
+    GMainLoop *loop = g_main_loop_new(nullptr, FALSE);
+    g_main_loop_run(loop);
+
+    // Clean-up
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+    gst_object_unref(pipeline);
+    return 0;
 }

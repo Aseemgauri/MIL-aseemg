@@ -13,9 +13,9 @@ JACK_LIBS   := $(shell pkg-config --libs jack)
 CXXFLAGS = -std=c++17 -g -Wall $(GST_CFLAGS) $(JACK_CFLAGS)
 
 # Target executable
-TARGET = chunks_audio
+TARGET = gst_client
 
-# Source files
+# Source files (using static config header)
 SRCS = chunks.cpp
 
 # Object files
@@ -36,11 +36,11 @@ clean:
 # Help target
 help:
 	@echo "Available targets:"
-	@echo "  all (default) - Build chunks_audio program"
+	@echo "  all (default) - Build gst_client program"
 	@echo "  clean         - Remove built files"
 	@echo "  help          - Show this help"
 	@echo ""
 	@echo "Usage: make"
-	@echo "Output: ./chunks_audio"
+	@echo "Output: ./gst_client"
 
 .PHONY: clean help

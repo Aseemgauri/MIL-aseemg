@@ -1,0 +1,37 @@
+/*
+ * Node Server Configuration
+ * 
+ * AUTO-GENERATED FILE - DO NOT EDIT MANUALLY!
+ * Generated from system.conf by generate_configs.py
+ * 
+ * To change configuration values, edit system.conf and run:
+ * python3 generate_configs.py
+ */
+
+const SYSTEM_SAMPLE_RATE = 16000;
+const SYSTEM_NUM_CLASSES = 5;
+const SYSTEM_CLASS_NAMES = ['Baby cry', 'Cat', 'Rooster', 'Cricket', 'Dog'];
+const SYSTEM_NODE_SERVER_PORT = 3000;
+const SYSTEM_LAPTOP_IP = '100.121.151.92';
+const NODE_DATA_EXPIRY_TIME_SECONDS = 300;
+const NODE_MINIMUM_ACTIVATION_TIME_MS = 1000;
+const NODE_MAX_EVENTS_PER_CLASS = 100;
+const NODE_MAX_TOTAL_EVENTS = 500;
+const NODE_SOCKET_PATH = '/tmp/humanfm.sock';
+const NODE_DATABASE_FILE = 'humanfm.db';
+const NODE_DEFAULT_CLASS_LEVEL = 50.0;
+
+module.exports = {
+  SYSTEM_SAMPLE_RATE,
+  SYSTEM_NUM_CLASSES,
+  SYSTEM_CLASS_NAMES,
+  SYSTEM_NODE_SERVER_PORT,
+  SYSTEM_LAPTOP_IP,
+  NODE_DATA_EXPIRY_TIME_SECONDS,
+  NODE_MINIMUM_ACTIVATION_TIME_MS,
+  NODE_MAX_EVENTS_PER_CLASS,
+  NODE_MAX_TOTAL_EVENTS,
+  NODE_SOCKET_PATH,
+  NODE_DATABASE_FILE,
+  NODE_DEFAULT_CLASS_LEVEL,
+};

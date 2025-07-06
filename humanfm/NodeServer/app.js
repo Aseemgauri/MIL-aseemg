@@ -15,25 +15,29 @@ const sqlite3 = require("sqlite3");
 const sqlite = require("sqlite");
 console.log("SQLite loaded");
 
+// Import configuration
+const config = require("./config");
+console.log("Configuration loaded");
+
 // Constants
 const USER_ERROR = 400;
 const SERVER_ERROR = 500;
-const PORT_NUM = 8000;
-const DATA_EXPIRY_TIME = 5000; // 5 seconds - how long to keep classification data
-const DETECTION_THRESHOLD = 0.5; // Minimum score for class detection
+const PORT_NUM = config.SYSTEM_NODE_SERVER_PORT;
+const DATA_EXPIRY_TIME = config.NODE_DATA_EXPIRY_TIME_MS;
+const DETECTION_THRESHOLD = config.NODE_DETECTION_THRESHOLD;
 
 // Global variable to store the latest classification results (top 5)
 let latestClassifications = [];
 let lastClassificationTime = null;
 
-// Define the 5 specific classes we care about (must match Python server output)
-const TARGET_CLASSES = ["Baby cry", "Cat", "Rooster", "Cricket", "Dog"];
+// Define the specific classes we care about (from configuration)
+const TARGET_CLASSES = config.SYSTEM_CLASS_NAMES;
 
 // Hysteresis system: Track class states and activation timers
-let previousClassStates = [0, 0, 0, 0, 0]; // Previous detection states
-let currentDisplayStates = [0, 0, 0, 0, 0]; // What we're currently showing to clients
-let classActivationTimers = [null, null, null, null, null]; // Timers for each class
-const MINIMUM_ACTIVATION_TIME = 5000; // 5 seconds minimum display time
+let previousClassStates = new Array(config.SYSTEM_NUM_CLASSES).fill(0); // Previous detection states
+let currentDisplayStates = new Array(config.SYSTEM_NUM_CLASSES).fill(0); // What we're currently showing to clients
+let classActivationTimers = new Array(config.SYSTEM_NUM_CLASSES).fill(null); // Timers for each class
+const MINIMUM_ACTIVATION_TIME = config.NODE_MINIMUM_ACTIVATION_TIME_MS;
 
 console.log("Setting up Express middleware...");
 
@@ -163,7 +167,7 @@ app.post("/HumanFM/classify", (req, res) => {
  */
 async function getDBConnection() {
   const db = await sqlite.open({
-    filename: 'humanfm.db',
+    filename: config.NODE_DATABASE_FILE,
     driver: sqlite3.Database
   });
   return db;
@@ -182,7 +186,7 @@ console.log("📡 Setting up Unix domain socket...");
 // UNIX DOMAIN SOCKET SERVER FOR C++ CLIENT
 // =============================================================================
 
-const SOCKET_PATH = '/tmp/humanfm.sock';
+const SOCKET_PATH = config.NODE_SOCKET_PATH;
 
 // Remove existing socket file if it exists
 if (fs.existsSync(SOCKET_PATH)) {
@@ -210,7 +214,7 @@ async function getClassLevels() {
       if (result.length > 0) {
         levels.push(parseFloat(result[0].level));
       } else {
-        levels.push(50.0); // Default level if class not found (50% volume)
+        levels.push(config.NODE_DEFAULT_CLASS_LEVEL); // Default level if class not found
       }
     }
     
@@ -218,7 +222,7 @@ async function getClassLevels() {
     return levels;
   } catch (err) {
     console.error("Error getting class levels:", err);
-    return [50.0, 50.0, 50.0, 50.0, 50.0]; // Default values on error
+    return new Array(config.SYSTEM_NUM_CLASSES).fill(config.NODE_DEFAULT_CLASS_LEVEL); // Default values on error
   }
 }
 
@@ -228,7 +232,7 @@ function getClasses() {
   const dataAge = lastClassificationTime ? now - lastClassificationTime : Infinity;
   
   // Get raw detections from latest classifications
-  const rawDetectionVector = [0, 0, 0, 0, 0];
+  const rawDetectionVector = new Array(config.SYSTEM_NUM_CLASSES).fill(0);
   
   if (latestClassifications && latestClassifications.length > 0 && dataAge < DATA_EXPIRY_TIME) {
     // Check each target class

@@ -1,7 +1,8 @@
 #include "humanfm_client.hpp"
 #include <errno.h>
+#include "sl_config.h"  // Include the static configuration (auto-generated)
 
-const char* HumanFMClient::SOCKET_PATH = "/tmp/humanfm.sock";
+// Socket path is now obtained from configuration system
 
 HumanFMClient::HumanFMClient() : sockfd_(-1), connected_(false) {
     // Don't connect immediately - let it connect on first use
@@ -29,7 +30,7 @@ bool HumanFMClient::connect() {
     // Set up address
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+    strncpy(addr.sun_path, SL_SOCKET_PATH, sizeof(addr.sun_path) - 1);
     
     // Connect to server
     if (::connect(sockfd_, (struct sockaddr*)&addr, sizeof(addr)) == -1) {

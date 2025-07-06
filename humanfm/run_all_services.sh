@@ -1,9 +1,19 @@
 #!/bin/bash
 
 # Script to run all services concurrently in the specified order
-# Order: jack_server_start.sh -> jack_add_sc.sh -> node_server.sh -> sl_client.sh -> gst_client.sh
+# Order: generate_configs.py -> jack_server_start.sh -> jack_add_sc.sh -> node_server.sh -> sl_client.sh -> gst_client.sh
 
 echo "Starting all services in sequence..."
+
+# First, generate all configuration files (SYNCHRONOUS - must complete before services start)
+echo "0. Generating configuration files..."
+./set_configs.sh
+if [ $? -ne 0 ]; then
+    echo "❌ Config generation failed! Aborting service startup."
+    exit 1
+fi
+echo "✅ Configuration files generated successfully"
+echo ""
 
 # Start jack_server_start.sh first
 echo "1. Starting jack_server_start.sh..."
@@ -44,6 +54,7 @@ GST_CLIENT_PID=$!
 
 echo ""
 echo "All services started successfully!"
+echo "Configuration: ✅ Generated fresh configs"
 echo "Process IDs:"
 echo "  jack_server_start.sh: $JACK_SERVER_PID"
 echo "  jack_add_sc.sh: $JACK_ADD_PID"

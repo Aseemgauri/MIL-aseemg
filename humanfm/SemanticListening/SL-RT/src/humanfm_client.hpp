@@ -13,7 +13,6 @@
 
 class HumanFMClient {
 private:
-    static const char* SOCKET_PATH;
     static const int HUMANFM_BUFFER_SIZE = 1024;
     
     // Persistent connection members

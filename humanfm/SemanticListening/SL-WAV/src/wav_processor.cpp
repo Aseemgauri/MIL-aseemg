@@ -11,12 +11,13 @@
 #include "ringbuffer.h"
 #include "audio_config.h"
 #include "SL_Model.h"
+#include "../../../SL-RT/src/sl_config.h"  // Include system configuration
 
 // Macro to control whether to use model inference or bypass it
 #define BYPASS_INFERENCE 0  // Set to 1 to bypass model, 0 to use model
 
-// Number of output classes (only hardcoded value allowed)
-#define NUM_CLASSES 5
+// Number of output classes (from system configuration)
+#define NUM_CLASSES SYSTEM_NUM_CLASSES
 
 // WAV file header structure
 struct WAVHeader {
@@ -375,8 +376,8 @@ private:
             return false;
         }
 
-        if (header.sample_rate != 16000) {
-            std::cerr << "Error: Input file must be 16kHz" << std::endl;
+        if (header.sample_rate != SYSTEM_SAMPLE_RATE) {
+            std::cerr << "Error: Input file must be " << SYSTEM_SAMPLE_RATE << "Hz" << std::endl;
             return false;
         }
 
@@ -749,7 +750,7 @@ private:
         outputHeader.fmt_chunk_size = 16;
         outputHeader.audio_format = 3;  // IEEE Float
         outputHeader.num_channels = 1;  // Mono
-        outputHeader.sample_rate = 16000;
+        outputHeader.sample_rate = SYSTEM_SAMPLE_RATE;
         outputHeader.bit_depth = 32;
         outputHeader.byte_rate = outputHeader.sample_rate * outputHeader.num_channels * outputHeader.bit_depth / 8;
         outputHeader.block_align = outputHeader.num_channels * outputHeader.bit_depth / 8;

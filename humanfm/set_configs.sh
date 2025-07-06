@@ -1,0 +1,1 @@
+python common/generate_configs.py
