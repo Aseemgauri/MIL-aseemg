@@ -29,7 +29,7 @@ DEMO_CLASS = PYTHON_DEMO_CLASS
 CLASS_THRESHOLD = PYTHON_CLASS_THRESHOLD
 
 # Node.js server configuration
-ORANGEPI_IP = "100.82.70.55"  # Replace with your Orange Pi's actual IP address
+ORANGEPI_IP = SYSTEM_ORANGEPI_IP  # Use config value instead of hardcoded IP
 NODE_SERVER_PORT = SYSTEM_NODE_SERVER_PORT
 
 # Model initialization

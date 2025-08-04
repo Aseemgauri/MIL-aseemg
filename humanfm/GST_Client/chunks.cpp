@@ -134,7 +134,7 @@ bool connectJackPorts(const std::string& clientName) {
 int main(int argc, char *argv[]) {
     // Print configuration information
     std::cout << "=== GST Client Configuration (from system.conf) ===" << std::endl;
-    std::cout << "Audio Mode: " << (GST_USE_FILE_AUDIO ? "file" : "live") << std::endl;
+    std::cout << "Audio Mode: " << (GST_AUDIO_MODE ? "file" : "live") << std::endl;
     std::cout << "Audio Backend: " << GST_AUDIO_BACKEND << std::endl;
     std::cout << "Sample Rate: " << SYSTEM_SAMPLE_RATE << " Hz" << std::endl;
     std::cout << "Streaming Mode: " << SYSTEM_STREAMING_MODE << std::endl;

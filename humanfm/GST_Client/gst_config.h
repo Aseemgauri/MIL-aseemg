@@ -19,8 +19,8 @@
 #define SYSTEM_UDP_STREAMING_PORT 5000
 #define SYSTEM_MULTICAST_ADDRESS "239.1.1.1"
 #define GST_AUDIO_MODE "live"
-#define GST_AUDIO_FILE_DIRECTORY "/home/orangepi/Documents/MIL-aseemg/humanfm/audio_samples/"
-#define GST_DEFAULT_AUDIO_FILE "test_sample.wav"
+#define GST_AUDIO_FILE_DIRECTORY "/home/orangepi/Documents/CSE_492R_2025-HumanFM/audio/"
+#define GST_DEFAULT_AUDIO_FILE "dog_16k.wav"
 #define GST_VOLUME_COMPENSATION 4.0
 #define GST_AMPLIFY_COMPENSATION 16.0
 #define GST_AUDIO_BACKEND "jack"

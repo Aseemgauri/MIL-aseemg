@@ -245,6 +245,7 @@ class ConfigGenerator:
             "SYSTEM_UDP_STREAMING_PORT": self.config["SYSTEM_UDP_STREAMING_PORT"],
             "SYSTEM_MULTICAST_ADDRESS": self.config["SYSTEM_MULTICAST_ADDRESS"],
             "SYSTEM_NODE_SERVER_PORT": self.config["SYSTEM_NODE_SERVER_PORT"],
+            "SYSTEM_ORANGEPI_IP": self.config["SYSTEM_ORANGEPI_IP"],
             
             # Python specific settings
             "PYTHON_DEMO_MODE": self.config["PYTHON_DEMO_MODE"],
@@ -273,7 +274,9 @@ class ConfigGenerator:
             
             # Node specific settings
             "NODE_DATA_EXPIRY_TIME_SECONDS": self.config["NODE_DATA_EXPIRY_TIME_SECONDS"],
+            "NODE_DATA_EXPIRY_TIME_MS": self.config["NODE_DATA_EXPIRY_TIME_SECONDS"] * 1000,  # Convert to milliseconds
             "NODE_MINIMUM_ACTIVATION_TIME_MS": self.config["NODE_MINIMUM_ACTIVATION_TIME_MS"],
+            "NODE_DETECTION_THRESHOLD": self.config["NODE_DETECTION_THRESHOLD"],
             "NODE_MAX_EVENTS_PER_CLASS": self.config["NODE_MAX_EVENTS_PER_CLASS"],
             "NODE_MAX_TOTAL_EVENTS": self.config["NODE_MAX_TOTAL_EVENTS"],
             "NODE_SOCKET_PATH": self.config["SOCKET_PATH"],
