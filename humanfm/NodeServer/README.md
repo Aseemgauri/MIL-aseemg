@@ -1,2 +1,3 @@
-# CSE 499 Wi/Sp 2025: Semantic Hearing Research Project
-This repository will store all of the code associated with my research project for CSE 499 (in association with CSE 492R) for the winter and spring quarters of 2025.
+# Semantic Listening Research Project - Mobile Intelligence Lab
+This repository will store all of the code associated with my research work in the Mobile Intelligence Lab (in association with CSE 492R) from January 2025 onwards.
+
