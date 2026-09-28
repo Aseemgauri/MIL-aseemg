@@ -51,10 +51,10 @@ class MultiSpeakerClassifier:
         self.chat_history = []
         self.max_history_length = 15
         self.conversation_groupings = conversation_groupings
-        self.together_api_key = "a477d03aca658e53c9729e5b94daa469f7cad812e4652753a05e46f99084f872"
-        self.openai_api_key = "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"
-        self.gemini_api_key = "AIzaSyCiMqKbDVDEf-3hF5GoYufdJTvESpsX2U0"
-        self.claude_api_key = "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"
+        self.together_api_key = ""
+        self.openai_api_key = ""
+        self.gemini_api_key = ""
+        self.claude_api_key = ""
         # Only load HuggingFace model if not OpenAI, Gemini, Claude, or Together
         if not self.is_openai and not self.is_gemini and not self.is_claude and not self.is_together:
             self.load_model()
